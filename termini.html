@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Termini - Schedule</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    body{background:var(--bg);}
+    .term-wrap{max-width:1000px;margin:28px auto;padding:20px}
+    .term-card{background:var(--card);padding:18px;border-radius:10px;box-shadow:0 6px 18px rgba(2,6,23,0.06);text-align:center}
+    .term-card img{max-width:100%;height:auto;border-radius:6px}
+    .back{display:inline-block;margin-bottom:12px;color:#0f172a}
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-logo">
+        <img src="logo.png" alt="Logo" onerror="this.style.display='none'" />
+      </div>
+      <div class="brand-title">ORK Rudar Banovići</div>
+    </div>
+    <div class="header-right">
+      <a href="index.html" class="back">← Back</a>
+    </div>
+  </header>
+
+  <main class="term-wrap">
+    <div class="term-card">
+      <h2>Termini</h2>
+      <p class="muted">Weekly training schedule — organized by day and group.</p>
+
+      <div class="table-wrap">
+      <table class="schedule-table">
+        <thead>
+          <tr>
+            <th>Dan</th>
+            <th>Stariji</th>
+            <th>Mladi i golmani</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td data-label="Dan">Ponedeljak</td>
+            <td data-label="Stariji">12:30–13:30</td>
+            <td data-label="Mladi i golmani">Za golmane: 12:00–12:30<br/>Za najmlađe: 18:30–20:00 (OŠ Moša)</td>
+          </tr>
+          <tr>
+            <td data-label="Dan">Utorak</td>
+            <td data-label="Stariji">12:00–13:30<br/>17:00–18:30</td>
+            <td data-label="Mladi i golmani">—</td>
+          </tr>
+          <tr>
+            <td data-label="Dan">Srijeda</td>
+            <td data-label="Stariji">12:30–13:30<br/>17:00–18:00</td>
+            <td data-label="Mladi i golmani">Za golmane: 12:00–12:30<br/>Za mlade: 20:00–21:15</td>
+          </tr>
+          <tr>
+            <td data-label="Dan">Četvrtak</td>
+            <td data-label="Stariji">12:30–13:30<br/>17:00–18:00</td>
+            <td data-label="Mladi i golmani">Za golmane: 12:00–12:30</td>
+          </tr>
+          <tr>
+            <td data-label="Dan">Petak</td>
+            <td data-label="Stariji">12:30–13:30<br/>17:00–18:00</td>
+            <td data-label="Mladi i golmani">12:30–13:30<br/>17:00–18:00</td>
+          </tr>
+          <tr>
+            <td data-label="Dan">Subota</td>
+            <td data-label="Stariji">13:30–15:00</td>
+            <td data-label="Mladi i golmani">—</td>
+          </tr>
+          <tr>
+            <td data-label="Dan">Nedelja</td>
+            <td data-label="Stariji">10:00–11:15</td>
+            <td data-label="Mladi i golmani">11:15–12:15</td>
+          </tr>
+        </tbody>
+      </table>
+      </div>
+
+      <div style="margin-top:12px; text-align:right">
+        <a href="index.html" class="btn secondary">Back to announcements</a>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

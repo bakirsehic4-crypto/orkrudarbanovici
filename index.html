@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width,initial-scale=1" />
+		<title>ORK Rudar Banovići</title>
+		<link rel="icon" type="image/png" href="logo.png" />
+		<link rel="stylesheet" href="style.css" />
+	</head>
+	<body>
+		<div id="loginOverlay" class="login-overlay" aria-hidden="false">
+			<div class="login-card">
+				<div class="auth-tabs">
+					<button id="loginTabBtn" type="button" class="auth-tab active">Sign in</button>
+					<button id="signupTabBtn" type="button" class="auth-tab">Sign up</button>
+				</div>
+				<h2 id="authTitle">Sign in</h2>
+				<form id="authForm">
+					<input id="authName" placeholder="Name" required />
+					<input id="authPass" type="password" placeholder="Password" required />
+					<div class="form-row">
+						<button id="authSubmitBtn" class="btn" type="submit">Enter</button>
+					</div>
+				</form>
+				<p id="authHint" class="muted">Use your saved account to continue.</p>
+			</div>
+		</div>
+
+		<header class="app-header">
+			<div class="brand">
+				<div class="brand-logo">
+					<img src="logo.png" alt="Logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'" />
+					<div class="logo-fallback" style="display:none" aria-hidden="true">A</div>
+				</div>
+				<div class="brand-title">ORK Rudar Banovići</div>
+			</div>
+			<div class="header-right">
+				<div class="avatar" id="avatar" title="User">A</div>
+				<div class="menu">
+					<button id="menuBtn" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="menuList">
+						<span class="bar"></span>
+						<span class="bar"></span>
+						<span class="bar"></span>
+					</button>
+					<div id="menuList" class="menu-list" role="menu">
+						<button class="menu-item" id="terminiBtn">Termini</button>
+						<button class="menu-item" id="matchesBtn">Utakmice</button>
+						<button class="menu-item" id="logoutBtn">Logout</button>
+					</div>
+				</div>
+			</div>
+		</header>
+
+		<main class="container">
+			<section id="viewAnnouncements" class="view-panel active">
+				<section id="announcementAdminBlock" class="create">
+					<h2>Create Announcement</h2>
+					<form id="announcementForm">
+						<textarea id="message" placeholder="Message" rows="4" required></textarea>
+						<div class="form-row">
+							<button type="submit" class="btn">Publish</button>
+							<button type="button" id="clearBtn" class="btn secondary">Clear</button>
+						</div>
+					</form>
+				</section>
+
+				<section class="list">
+					<h2>Announcements</h2>
+					<ul id="announcements"></ul>
+				</section>
+			</section>
+
+			<section id="viewTermini" class="view-panel">
+				<div class="term-card">
+					<h2>Termini</h2>
+					<p class="muted">Termini treninga</p>
+
+					<div class="table-wrap">
+					<table class="schedule-table">
+						<thead>
+							<tr>
+								<th>Dan</th>
+								<th>Stariji</th>
+								<th>Mladi i golmani</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<td data-label="Dan">Ponedeljak</td>
+								<td data-label="Stariji">12:30–13:30</td>
+								<td data-label="Mladi i golmani">Za golmane: 12:00–12:30<br/>Za najmlađe: 18:30–20:00 (OŠ Moša)</td>
+							</tr>
+							<tr>
+								<td data-label="Dan">Utorak</td>
+								<td data-label="Stariji">12:00–13:30<br/>17:00–18:30</td>
+								<td data-label="Mladi i golmani">—</td>
+							</tr>
+							<tr>
+								<td data-label="Dan">Srijeda</td>
+								<td data-label="Stariji">12:30–13:30<br/>17:00–18:00</td>
+								<td data-label="Mladi i golmani">Za golmane: 12:00–12:30<br/>Za mlade: 20:00–21:15</td>
+							</tr>
+							<tr>
+								<td data-label="Dan">Četvrtak</td>
+								<td data-label="Stariji">12:30–13:30<br/>17:00–18:00</td>
+								<td data-label="Mladi i golmani">Za golmane: 12:00–12:30</td>
+							</tr>
+							<tr>
+								<td data-label="Dan">Petak</td>
+								<td data-label="Stariji">12:30–13:30<br/>17:00–18:00</td>
+								<td data-label="Mladi i golmani">12:30–13:30<br/>17:00–18:00</td>
+							</tr>
+							<tr>
+								<td data-label="Dan">Subota</td>
+								<td data-label="Stariji">13:30–15:00</td>
+								<td data-label="Mladi i golmani">—</td>
+							</tr>
+							<tr>
+								<td data-label="Dan">Nedelja</td>
+								<td data-label="Stariji">10:00–11:15</td>
+								<td data-label="Mladi i golmani">11:15–12:15</td>
+							</tr>
+						</tbody>
+					</table>
+					</div>
+				</div>
+			</section>
+
+			<section id="viewMatches" class="view-panel">
+				<div class="matches-card">
+					<div class="tabs">
+						<button id="tabUpcoming" class="tab-btn active" type="button">Predstojeće utakmice</button>
+						<button id="tabResultsBtn" class="tab-btn" type="button">Rezultati</button>
+					</div>
+
+					<div id="panelUpcoming" class="tab-panel">
+						<div class="matches-grid">
+							<div id="matchFormWrap">
+								<h3>Add Upcoming Match</h3>
+								<div id="matchAdminNotice" class="admin-only-note" style="display:none;">Samo admin akaunt moze dodati novu utakmicu.</div>
+								<form id="matchForm" class="match-form">
+									<label>Protivnik</label>
+									<select id="opponentSelect"></select>
+									<div id="newTeam" style="display:none;margin-top:6px">
+										<input id="newOpponent" placeholder="Novi tim" />
+										<label style="font-size:12px;margin-top:6px">Dodaj logo (optional)</label>
+										<input id="newBadge" type="file" accept="image/*" />
+									</div>
+									<label>Date & Time</label>
+									<input id="datetime" type="datetime-local" required />
+									<label>Location</label>
+									<select id="location"><option value="home">Kući</option><option value="away">Gostujuća</option></select>
+									<label>Competition / Notes</label>
+									<input id="competition" placeholder="e.g., League, Friendly" />
+									<label>Generation</label>
+									<select id="generation">
+										<option value="2010/11">2010/11</option>
+										<option value="2012/13">2012/13</option>
+										<option value="2014/15">2014/15</option>
+										<option value="Mini Rukomet">Mini Rukomet</option>
+									</select>
+									<div style="display:flex;gap:8px">
+										<button class="btn" type="submit">Dodaj Utakmicu</button>
+										<button id="clearMatches" type="button" class="btn secondary">Clear Form</button>
+									</div>
+								</form>
+
+								<h3 style="margin-top:18px">Predstojeće</h3>
+								<div id="upcomingList" class="match-list"></div>
+							</div>
+						</div>
+					</div>
+
+					<div id="panelResults" class="tab-panel" style="display:none">
+						<h3>Rezultati</h3>
+						<div class="result-filters" aria-label="Filter results by generation">
+							<button class="generation-btn active" type="button" data-generation="2010/11">10/11</button>
+							<button class="generation-btn" type="button" data-generation="2012/13">12/13</button>
+							<button class="generation-btn" type="button" data-generation="2014/15">14/15</button>
+							<button class="generation-btn" type="button" data-generation="Mini Rukomet">Mini rukomet</button>
+						</div>
+						<div id="resultsList" class="match-list"></div>
+					</div>
+				</div>
+			</section>
+		</main>
+
+		<script src="script.js"></script>
+	</body>
+</html>
+

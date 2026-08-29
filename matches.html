@@ -1,0 +1,421 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Matches & Results</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .matches-wrap{max-width:1000px;margin:28px auto;padding:20px}
+    .matches-card{background:var(--card);padding:18px;border-radius:10px;box-shadow:0 6px 18px rgba(2,6,23,0.06)}
+    .matches-grid{display:grid;grid-template-columns:1fr 360px;gap:18px}
+    @media(max-width:900px){.matches-grid{grid-template-columns:1fr}}
+    .match-form input,.match-form select{width:100%;padding:8px;border:1px solid #e6edf3;border-radius:8px;margin-bottom:8px}
+    .match-list{margin-top:8px}
+    .match-item{display:flex;justify-content:space-between;align-items:center;padding:10px;border-radius:8px;border:1px solid #eef3f8;margin-bottom:8px;background:#fff}
+    .match-meta{font-size:13px;color:var(--muted)}
+    .match-actions{display:flex;gap:8px}
+    .small{padding:6px 8px;font-size:13px}
+    .result-inputs{display:flex;gap:8px;align-items:center}
+    .result-inputs input{width:72px}
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-logo">
+        <img src="logo.png" alt="Logo" onerror="this.style.display='none'" />
+      </div>
+      <div class="brand-title">Matches</div>
+    </div>
+    <div class="header-right">
+      <button id="rudarBtn" class="btn secondary">Set Rudar badge</button>
+      <input id="rudarUpload" type="file" accept="image/*" style="display:none" />
+      <a href="index.html" class="btn secondary">Back</a>
+    </div>
+  </header>
+
+  <main class="matches-wrap">
+    <div class="matches-card">
+      <div class="tabs">
+        <button id="tabUpcoming" class="tab-btn active">Upcoming Matches</button>
+        <button id="tabResultsBtn" class="tab-btn">Results</button>
+      </div>
+
+      <div id="panelUpcoming" class="tab-panel">
+        <div class="matches-grid">
+          <div>
+            <h3>Add Upcoming Match</h3>
+            <form id="matchForm" class="match-form">
+              <label>Opponent</label>
+              <select id="opponentSelect"></select>
+              <div id="newTeam" style="display:none;margin-top:6px">
+                <input id="newOpponent" placeholder="New team name" />
+                <label style="font-size:12px;margin-top:6px">Upload badge (optional)</label>
+                <input id="newBadge" type="file" accept="image/*" />
+              </div>
+              <label>Date & Time</label>
+              <input id="datetime" type="datetime-local" required />
+              <label>Location</label>
+              <select id="location"><option value="home">Home</option><option value="away">Away</option></select>
+              <label>Competition / Notes</label>
+              <input id="competition" placeholder="e.g., League, Friendly" />
+              <label>Generation</label>
+              <select id="generation">
+                <option value="2010">2010</option>
+                <option value="2012">2012</option>
+                <option value="2014">2014</option>
+                <option value="Mini Rukomet">Mini Rukomet</option>
+              </select>
+              <div style="display:flex;gap:8px">
+                <button class="btn" type="submit">Add Match</button>
+                <button id="clearMatches" type="button" class="btn secondary">Clear Form</button>
+              </div>
+            </form>
+
+            <h3 style="margin-top:18px">Upcoming</h3>
+            <div id="upcomingList" class="match-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="panelResults" class="tab-panel" style="display:none">
+        <h3>Results</h3>
+        <div id="resultsList" class="match-list"></div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const matchForm = document.getElementById('matchForm');
+    const dateEl = document.getElementById('datetime');
+    const locationEl = document.getElementById('location');
+    const compEl = document.getElementById('competition');
+    const upcomingList = document.getElementById('upcomingList');
+    const resultsList = document.getElementById('resultsList');
+    const clearMatches = document.getElementById('clearMatches');
+    const clubName = 'ORK Rudar Banovići';
+    const API_BASE = '/api';
+
+    function readLocal(key, fallback) {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : fallback;
+      } catch (e) {
+        return fallback;
+      }
+    }
+
+    function writeLocal(key, value) {
+      localStorage.setItem(key, JSON.stringify(value));
+    }
+
+    async function fetchJson(url, options = {}) {
+      const response = await fetch(url, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options
+      });
+      if (!response.ok) {
+        throw new Error('Request failed: ' + response.status);
+      }
+      return response.json();
+    }
+
+    async function loadMatches() {
+      try {
+        const data = await fetchJson(API_BASE + '/matches');
+        return Array.isArray(data) ? data : [];
+      } catch (err) {
+        return readLocal('matches', []);
+      }
+    }
+
+    async function saveMatches(arr) {
+      writeLocal('matches', arr);
+      try {
+        await fetchJson(API_BASE + '/matches', {
+          method: 'POST',
+          body: JSON.stringify(arr)
+        });
+      } catch (err) {
+        // fallback while server is not available
+      }
+    }
+
+    async function loadTeams() {
+      try {
+        const data = await fetchJson(API_BASE + '/teams');
+        return data && typeof data === 'object' ? data : {};
+      } catch (err) {
+        return readLocal('teams', {});
+      }
+    }
+
+    async function saveTeams(obj) {
+      writeLocal('teams', obj);
+      try {
+        await fetchJson(API_BASE + '/teams', {
+          method: 'POST',
+          body: JSON.stringify(obj)
+        });
+      } catch (err) {
+        // fallback while server is not available
+      }
+    }
+
+    function getTeamBadge(name, teams) {
+      return teams[name] || null;
+    }
+
+    async function render() {
+      const [items, teamMap] = await Promise.all([loadMatches(), loadTeams()]);
+      upcomingList.innerHTML = '';
+      resultsList.innerHTML = '';
+      items.sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+
+      items.forEach(it => {
+        const el = document.createElement('div');
+        el.className = 'match-item';
+        const left = document.createElement('div');
+        const homeName = it.location === 'home' ? clubName : it.opponent;
+        const awayName = it.location === 'home' ? it.opponent : clubName;
+        const homeBadge = getTeamBadge(homeName, teamMap);
+        const awayBadge = getTeamBadge(awayName, teamMap);
+
+        function badgeTag(data) {
+          return data ? `<img src="${data}" class="team-badge" alt="badge"/>` : '';
+        }
+
+        if (it.played) {
+          left.innerHTML = `<div><strong>${badgeTag(homeBadge)} ${homeName} ${it.homeScore} - ${it.awayScore} ${awayName} ${badgeTag(awayBadge)}</strong></div><div class="match-meta">${new Date(it.datetime).toLocaleString()} ${it.competition ? ' • ' + it.competition : ''}${it.generation ? ' • ' + it.generation : ''}</div>`;
+        } else {
+          left.innerHTML = `<div><strong>${badgeTag(homeBadge)} ${homeName} vs ${awayName} ${badgeTag(awayBadge)}</strong> <div class="match-meta">${new Date(it.datetime).toLocaleString()}</div></div><div class="match-meta">${it.location === 'home' ? 'Home' : 'Away'}${it.competition ? ' • ' + it.competition : ''}${it.generation ? ' • ' + it.generation : ''}</div>`;
+        }
+
+        const actions = document.createElement('div');
+        actions.className = 'match-actions';
+
+        if (it.played) {
+          const score = document.createElement('div');
+          score.innerHTML = `<strong>${it.homeScore} - ${it.awayScore}</strong>`;
+          actions.appendChild(score);
+
+          const del = document.createElement('button');
+          del.className = 'small';
+          del.textContent = 'Delete';
+          del.addEventListener('click', async () => {
+            if (confirm('Delete this match?')) {
+              const arr = await loadMatches();
+              const next = arr.filter(m => m.id !== it.id);
+              await saveMatches(next);
+              render();
+            }
+          });
+          actions.appendChild(del);
+          el.appendChild(left);
+          el.appendChild(actions);
+          resultsList.appendChild(el);
+        } else {
+          const playBtn = document.createElement('button');
+          playBtn.className = 'small';
+          playBtn.textContent = 'Enter Result';
+          playBtn.addEventListener('click', () => showResultInputs(it.id, el, it));
+
+          const del = document.createElement('button');
+          del.className = 'small';
+          del.textContent = 'Delete';
+          del.addEventListener('click', async () => {
+            if (confirm('Delete this match?')) {
+              const arr = await loadMatches();
+              const next = arr.filter(m => m.id !== it.id);
+              await saveMatches(next);
+              render();
+            }
+          });
+
+          actions.appendChild(playBtn);
+          actions.appendChild(del);
+          el.appendChild(left);
+          el.appendChild(actions);
+          upcomingList.appendChild(el);
+        }
+      });
+
+      if (upcomingList.children.length === 0) upcomingList.innerHTML = '<div class="match-meta">No upcoming matches.</div>';
+      if (resultsList.children.length === 0) resultsList.innerHTML = '<div class="match-meta">No results yet.</div>';
+    }
+
+    function showResultInputs(id, container, match) {
+      container.querySelector('.match-actions').innerHTML = '';
+      const inputs = document.createElement('div');
+      inputs.className = 'result-inputs';
+      const homeName = match.location === 'home' ? clubName : match.opponent;
+      const awayName = match.location === 'home' ? match.opponent : clubName;
+      const homeInput = document.createElement('input');
+      homeInput.type = 'number';
+      homeInput.min = 0;
+      homeInput.placeholder = homeName;
+      const awayInput = document.createElement('input');
+      awayInput.type = 'number';
+      awayInput.min = 0;
+      awayInput.placeholder = awayName;
+      const save = document.createElement('button');
+      save.className = 'small';
+      save.textContent = 'Save';
+      const cancel = document.createElement('button');
+      cancel.className = 'small';
+      cancel.textContent = 'Cancel';
+      inputs.appendChild(homeInput);
+      inputs.appendChild(document.createTextNode('-'));
+      inputs.appendChild(awayInput);
+      inputs.appendChild(save);
+      inputs.appendChild(cancel);
+      container.querySelector('.match-actions').appendChild(inputs);
+
+      save.addEventListener('click', async () => {
+        const homeScore = parseInt(homeInput.value, 10);
+        const awayScore = parseInt(awayInput.value, 10);
+        if (Number.isNaN(homeScore) || Number.isNaN(awayScore)) return alert('Enter both scores');
+
+        const arr = await loadMatches();
+        const updated = arr.map(m => {
+          if (m.id === id) {
+            return { ...m, played: true, homeScore, awayScore };
+          }
+          return m;
+        });
+        await saveMatches(updated);
+        render();
+      });
+
+      cancel.addEventListener('click', render);
+    }
+
+    async function ensureClubBadge() {
+      const teams = await loadTeams();
+      if (teams[clubName]) return;
+      const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230a3923'/><circle cx='50' cy='50' r='40' fill='%231fb44a'/><text x='50' y='60' font-size='40' text-anchor='middle' fill='%23fff' font-family='Arial'>R</text></svg>`;
+      teams[clubName] = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+      writeLocal('teams', teams);
+      await saveTeams(teams);
+      populateOpponentSelect();
+      render();
+    }
+
+    function populateOpponentSelect() {
+      const sel = document.getElementById('opponentSelect');
+      const teams = readLocal('teams', {});
+      sel.innerHTML = '';
+      const optChoose = document.createElement('option');
+      optChoose.value = '';
+      optChoose.textContent = 'Select existing team...';
+      sel.appendChild(optChoose);
+      Object.keys(teams).forEach(name => {
+        const o = document.createElement('option');
+        o.value = name;
+        o.textContent = name;
+        sel.appendChild(o);
+      });
+      const oNew = document.createElement('option');
+      oNew.value = '__new';
+      oNew.textContent = 'Add new team...';
+      sel.appendChild(oNew);
+    }
+
+    const opponentSelect = document.getElementById('opponentSelect');
+    opponentSelect.addEventListener('change', () => {
+      const v = opponentSelect.value;
+      document.getElementById('newTeam').style.display = v === '__new' ? 'block' : 'none';
+    });
+
+    const rudarBtn = document.getElementById('rudarBtn');
+    const rudarUpload = document.getElementById('rudarUpload');
+    if (rudarBtn && rudarUpload) {
+      rudarBtn.addEventListener('click', () => rudarUpload.click());
+      rudarUpload.addEventListener('change', () => {
+        const file = rudarUpload.files[0];
+        if (!file) return;
+        const fr = new FileReader();
+        fr.onload = async () => {
+          const teams = readLocal('teams', {});
+          teams[clubName] = fr.result;
+          writeLocal('teams', teams);
+          await saveTeams(teams);
+          populateOpponentSelect();
+          render();
+          alert('Rudar badge saved.');
+        };
+        fr.readAsDataURL(file);
+      });
+    }
+
+    matchForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      const sel = document.getElementById('opponentSelect');
+      let opponent = sel.value;
+      const datetime = dateEl.value;
+      const location = locationEl.value;
+      const competition = compEl.value.trim();
+      const generation = document.getElementById('generation') ? document.getElementById('generation').value : '';
+      if (!datetime) return alert('Date/time required');
+
+      if (opponent === '__new' || opponent === '') {
+        const newName = document.getElementById('newOpponent').value.trim();
+        if (!newName) return alert('Enter new team name');
+        const badgeFile = document.getElementById('newBadge').files[0];
+        const teams = readLocal('teams', {});
+        const finishAdd = async badgeData => {
+          if (badgeData) teams[newName] = badgeData;
+          writeLocal('teams', teams);
+          await saveTeams(teams);
+          populateOpponentSelect();
+          await addMatch(newName, datetime, location, competition, generation);
+        };
+
+        if (badgeFile) {
+          const fr = new FileReader();
+          fr.onload = () => finishAdd(fr.result);
+          fr.readAsDataURL(badgeFile);
+        } else {
+          await finishAdd(null);
+        }
+      } else {
+        await addMatch(opponent, datetime, location, competition, generation);
+      }
+    });
+
+    async function addMatch(opponent, datetime, location, competition, generation) {
+      const arr = await loadMatches();
+      arr.push({ id: 'm_' + Date.now(), opponent, datetime, location, competition, generation, played: false });
+      await saveMatches(arr);
+      matchForm.reset();
+      populateOpponentSelect();
+      render();
+    }
+
+    clearMatches.addEventListener('click', () => { matchForm.reset(); });
+
+    populateOpponentSelect();
+    ensureClubBadge();
+    render();
+
+    const tabUpcoming = document.getElementById('tabUpcoming');
+    const tabResultsBtn = document.getElementById('tabResultsBtn');
+    const panelUpcoming = document.getElementById('panelUpcoming');
+    const panelResults = document.getElementById('panelResults');
+
+    function showPanel(panel) {
+      if (panel === 'upcoming') {
+        panelUpcoming.style.display = 'block'; panelResults.style.display = 'none';
+        tabUpcoming.classList.add('active'); tabResultsBtn.classList.remove('active');
+      } else {
+        panelUpcoming.style.display = 'none'; panelResults.style.display = 'block';
+        tabUpcoming.classList.remove('active'); tabResultsBtn.classList.add('active');
+      }
+    }
+
+    tabUpcoming.addEventListener('click', () => showPanel('upcoming'));
+    tabResultsBtn.addEventListener('click', () => showPanel('results'));
+  </script>
+</body>
+</html>
