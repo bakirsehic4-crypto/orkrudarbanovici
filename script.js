@@ -10,6 +10,24 @@ const ADMIN_USERNAME = 'admin';
 const ADMIN_PASSWORD = 'admin123';
 const USERS_KEY = 'club_users';
 const SESSION_USER_KEY = 'club_session_user';
+const PROFILE_IMAGE_KEY = 'club_profile_image';
+
+async function fetchCurrentUserProfile() {
+  const username = currentUser();
+  if (!username) return;
+
+  try {
+    const data = await fetchJson(API_BASE + '/users/' + encodeURIComponent(username));
+    if (data && data.avatar) {
+      setProfileImage(data.avatar);
+    } else {
+      localStorage.removeItem(PROFILE_IMAGE_KEY);
+    }
+    updateAuthUi();
+  } catch (err) {
+    // ignore profile fetch errors and keep the locally stored avatar if present
+  }
+}
 
 async function ensureDefaultAdminUser() {
   try {
@@ -69,6 +87,18 @@ function isAdminUser(username) {
   return normalizeName(username) === ADMIN_USERNAME;
 }
 
+function getProfileImage() {
+  return localStorage.getItem(PROFILE_IMAGE_KEY) || '';
+}
+
+function setProfileImage(imageData) {
+  if (!imageData) {
+    localStorage.removeItem(PROFILE_IMAGE_KEY);
+    return;
+  }
+  localStorage.setItem(PROFILE_IMAGE_KEY, imageData);
+}
+
 function updateAuthUi() {
   const user = currentUser();
   const isAdmin = isAdminUser(user);
@@ -90,10 +120,45 @@ function updateAuthUi() {
   }
 
   const avatarEl = document.getElementById('avatar');
+  const avatarWrap = document.querySelector('.avatar-wrap');
+  const removeAvatarBtn = document.getElementById('removeAvatarBtn');
+  const profileImage = getProfileImage();
+  const hasImage = !!profileImage && !!user;
+
   if (avatarEl) {
-    const initial = (user.trim().charAt(0) || 'A').toUpperCase();
-    avatarEl.textContent = initial;
     avatarEl.title = user || 'User';
+    if (profileImage) {
+      avatarEl.innerHTML = `<img src="${profileImage}" alt="Profile picture" />`;
+      avatarEl.classList.add('has-image');
+    } else {
+      const initial = (user.trim().charAt(0) || 'A').toUpperCase();
+      avatarEl.innerHTML = initial;
+      avatarEl.classList.remove('has-image');
+    }
+  }
+
+  if (avatarWrap) {
+    avatarWrap.classList.toggle('has-image', hasImage);
+  }
+
+  if (removeAvatarBtn) {
+    removeAvatarBtn.classList.toggle('visible', hasImage);
+    removeAvatarBtn.disabled = !hasImage;
+    removeAvatarBtn.style.visibility = user ? 'visible' : 'hidden';
+  }
+}
+
+async function saveProfileImageToServer(imageData) {
+  const username = currentUser();
+  if (!username) return;
+
+  try {
+    await fetchJson(API_BASE + '/users/' + encodeURIComponent(username) + '/avatar', {
+      method: 'PUT',
+      body: JSON.stringify({ avatar: imageData })
+    });
+  } catch (err) {
+    // ignore server errors and keep local copy if needed
   }
 }
 
@@ -130,26 +195,45 @@ async function saveAnnouncements(arr) {
   }
 }
 
-async function render() {
-  const items = await loadAnnouncements();
-  listEl.innerHTML = '';
-  if (items.length === 0) {
-    listEl.innerHTML = '<li class="announcement">No announcements yet.</li>';
-    return;
+function setPanelLoading(panelId, loading) {
+  const panel = document.getElementById(panelId);
+  if (!panel) return;
+  let loader = panel.querySelector('.panel-loader');
+  if (!loader) {
+    loader = document.createElement('div');
+    loader.className = 'panel-loader';
+    loader.innerHTML = '<span class="mini-spinner" aria-hidden="true"></span><span>Loading...</span>';
+    panel.insertBefore(loader, panel.firstChild);
   }
-  items.forEach(it => {
-    const li = document.createElement('li');
-    li.className = 'announcement';
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    meta.textContent = formatDisplayDateTime(it.ts);
-    const msg = document.createElement('div');
-    msg.className = 'msg';
-    msg.textContent = it.message;
-    li.appendChild(meta);
-    li.appendChild(msg);
-    listEl.appendChild(li);
-  });
+  loader.classList.toggle('active', loading);
+}
+
+async function render() {
+  const panelId = 'viewAnnouncements';
+  setPanelLoading(panelId, true);
+  try {
+    const items = await loadAnnouncements();
+    listEl.innerHTML = '';
+    if (items.length === 0) {
+      listEl.innerHTML = '<li class="announcement">No announcements yet.</li>';
+      return;
+    }
+    items.forEach(it => {
+      const li = document.createElement('li');
+      li.className = 'announcement';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = formatDisplayDateTime(it.ts);
+      const msg = document.createElement('div');
+      msg.className = 'msg';
+      msg.textContent = it.message;
+      li.appendChild(meta);
+      li.appendChild(msg);
+      listEl.appendChild(li);
+    });
+  } finally {
+    setPanelLoading(panelId, false);
+  }
 }
 
 form.addEventListener('submit', async e => {
@@ -230,8 +314,35 @@ async function saveTeams(obj) {
   }
 }
 
+function normalizeTeamName(value) {
+  return (value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9 ]/g, '')
+    .toLowerCase();
+}
+
 function getTeamBadge(name, teams) {
-  return teams[name] || null;
+  if (!name) return null;
+
+  const normalizedName = normalizeTeamName(name);
+  const clubTokens = normalizeTeamName(clubName);
+  const isClubTeam = normalizedName.includes('rudar') || normalizedName.includes('banovici') || normalizedName.includes(clubTokens.replace(/\s+/g, '')) || normalizedName.includes(clubTokens);
+
+  if (isClubTeam) {
+    return 'rudar.png';
+  }
+
+  const exact = teams[name];
+  if (exact) return exact;
+
+  const normalizedMap = Object.fromEntries(
+    Object.entries(teams || {}).map(([key, value]) => [normalizeTeamName(key), value])
+  );
+
+  return normalizedMap[normalizedName] || null;
 }
 
 const RESULTS_GENERATION_KEYS = ['2010/11', '2012/13', '2014/15', 'Mini Rukomet'];
@@ -245,17 +356,20 @@ function setSelectedGenerationFilter(value) {
 }
 
 async function renderMatches() {
-  const upcomingList = document.getElementById('upcomingList');
-  const resultsList = document.getElementById('resultsList');
-  if (!upcomingList || !resultsList) return;
+  const panelId = 'viewMatches';
+  setPanelLoading(panelId, true);
+  try {
+    const upcomingList = document.getElementById('upcomingList');
+    const resultsList = document.getElementById('resultsList');
+    if (!upcomingList || !resultsList) return;
 
-  const [items, teamMap] = await Promise.all([loadMatches(), loadTeams()]);
-  const sortedItems = [...items].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
-  const upcomingMatches = sortedItems.filter((it) => !it.played);
-  const filteredResults = sortedItems.filter((it) => it.played && (!it.generation || it.generation === selectedGenerationFilter));
+    const [items, teamMap] = await Promise.all([loadMatches(), loadTeams()]);
+    const sortedItems = [...items].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+    const upcomingMatches = sortedItems.filter((it) => !it.played);
+    const filteredResults = sortedItems.filter((it) => it.played && (!it.generation || it.generation === selectedGenerationFilter));
 
-  upcomingList.innerHTML = '';
-  resultsList.innerHTML = '';
+    upcomingList.innerHTML = '';
+    resultsList.innerHTML = '';
 
   upcomingMatches.forEach((it) => {
     const el = document.createElement('div');
@@ -347,6 +461,9 @@ async function renderMatches() {
   }
   if (filteredResults.length === 0) {
     resultsList.innerHTML = '<div class="match-meta">No results yet for this generation.</div>';
+  }
+  } finally {
+    setPanelLoading(panelId, false);
   }
 }
 
@@ -630,6 +747,51 @@ if (logoutBtn) {
   });
 }
 
+const profileUpload = document.getElementById('profileUpload');
+const avatarEl = document.getElementById('avatar');
+const removeAvatarBtn = document.getElementById('removeAvatarBtn');
+if (profileUpload && avatarEl) {
+  avatarEl.addEventListener('click', () => profileUpload.click());
+  avatarEl.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      profileUpload.click();
+    }
+  });
+
+  profileUpload.addEventListener('change', async () => {
+    const file = profileUpload.files && profileUpload.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const data = String(reader.result || '');
+      setProfileImage(data);
+      await saveProfileImageToServer(data);
+      updateAuthUi();
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+if (removeAvatarBtn) {
+  removeAvatarBtn.addEventListener('click', async () => {
+    const username = currentUser();
+    if (!username) return;
+
+    localStorage.removeItem(PROFILE_IMAGE_KEY);
+    try {
+      await fetchJson(API_BASE + '/users/' + encodeURIComponent(username) + '/avatar', {
+        method: 'PUT',
+        body: JSON.stringify({ avatar: '' })
+      });
+    } catch (err) {
+      // ignore server issues, local state is still cleared
+    }
+    updateAuthUi();
+  });
+}
+
 showView('announcements');
 
 // --- login handling ---
@@ -699,6 +861,13 @@ authForm.addEventListener('submit', async e => {
         method: 'POST',
         body: JSON.stringify({ username: name, password: pass })
       });
+      const result = await fetchJson(API_BASE + '/users', {
+        method: 'POST',
+        body: JSON.stringify({ username: name, password: pass })
+      });
+      if (result && result.avatar) {
+        setProfileImage(result.avatar);
+      }
       logInUser(name);
       alert('Account created successfully.');
       return;
@@ -710,6 +879,9 @@ authForm.addEventListener('submit', async e => {
     });
 
     if (result && result.ok) {
+      if (result.avatar) {
+        setProfileImage(result.avatar);
+      }
       logInUser(result.username || name);
       return;
     }
@@ -735,6 +907,7 @@ if (!isLoggedIn()) {
 } else {
   setAuthMode('login');
   showLogin(false);
+  fetchCurrentUserProfile();
 }
 
 updateAuthUi();

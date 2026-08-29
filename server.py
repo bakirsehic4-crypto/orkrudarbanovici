@@ -78,10 +78,15 @@ def init_db():
             """
             CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY,
-                password TEXT NOT NULL
+                password TEXT NOT NULL,
+                avatar TEXT
             )
             """
         )
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN avatar TEXT")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
     finally:
         conn.close()
@@ -268,11 +273,46 @@ def save_teams():
         conn.close()
 
 
+@app.route('/api/users/<username>', methods=['GET'])
+def get_user(username):
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT username, avatar FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "User not found"}), 404
+        return jsonify({"ok": True, "username": row["username"], "avatar": row["avatar"]})
+    finally:
+        conn.close()
+
+
+@app.route('/api/users/<username>/avatar', methods=['PUT'])
+def update_user_avatar(username):
+    data = request.get_json(silent=True) or {}
+    avatar = str(data.get('avatar') or '').strip()
+
+    conn = get_db_connection()
+    try:
+        updated = conn.execute(
+            "UPDATE users SET avatar = ? WHERE username = ?",
+            (avatar or None, username),
+        )
+        conn.commit()
+        if updated.rowcount == 0:
+            return jsonify({"ok": False, "error": "User not found"}), 404
+        return jsonify({"ok": True, "username": username, "avatar": avatar or None})
+    finally:
+        conn.close()
+
+
 @app.route('/api/users', methods=['POST'])
 def create_user():
     data = request.get_json(silent=True) or {}
     username = str(data.get('username') or '').strip()
     password = str(data.get('password') or '').strip()
+    avatar = str(data.get('avatar') or '').strip() or None
     if not username or not password:
         return jsonify({"ok": False, "error": "Missing username or password"}), 400
 
@@ -282,9 +322,12 @@ def create_user():
         if existing:
             return jsonify({"ok": False, "error": "User exists"}), 409
 
-        conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
+        conn.execute(
+            "INSERT INTO users (username, password, avatar) VALUES (?, ?, ?)",
+            (username, password, avatar),
+        )
         conn.commit()
-        return jsonify({"ok": True, "username": username})
+        return jsonify({"ok": True, "username": username, "avatar": avatar})
     finally:
         conn.close()
 
@@ -298,12 +341,12 @@ def login_user():
     conn = get_db_connection()
     try:
         row = conn.execute(
-            "SELECT username FROM users WHERE username = ? AND password = ?",
+            "SELECT username, avatar FROM users WHERE username = ? AND password = ?",
             (username, password),
         ).fetchone()
         if not row:
             return jsonify({"ok": False, "error": "Wrong username or password"}), 401
-        return jsonify({"ok": True, "username": row["username"]})
+        return jsonify({"ok": True, "username": row["username"], "avatar": row["avatar"]})
     finally:
         conn.close()
 

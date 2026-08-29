@@ -29,13 +29,17 @@
 		<header class="app-header">
 			<div class="brand">
 				<div class="brand-logo">
-					<img src="logo.png" alt="Logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'" />
-					<div class="logo-fallback" style="display:none" aria-hidden="true">A</div>
+					<img src="rudar.png" alt="ORK Rudar Banovići logo" />
+					<div class="logo-fallback" style="display:none" aria-hidden="true">R</div>
 				</div>
 				<div class="brand-title">ORK Rudar Banovići</div>
 			</div>
 			<div class="header-right">
-				<div class="avatar" id="avatar" title="User">A</div>
+				<input id="profileUpload" type="file" accept="image/*" style="display:none" />
+				<div class="avatar-wrap">
+					<button type="button" id="removeAvatarBtn" class="avatar-remove" aria-label="Remove profile picture" title="Remove profile picture">×</button>
+					<div class="avatar" id="avatar" title="User" tabindex="0" role="button" aria-label="Change profile picture">A</div>
+				</div>
 				<div class="menu">
 					<button id="menuBtn" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="menuList">
 						<span class="bar"></span>
