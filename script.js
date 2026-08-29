@@ -11,11 +11,22 @@ const ADMIN_PASSWORD = 'admin123';
 const USERS_KEY = 'club_users';
 const SESSION_USER_KEY = 'club_session_user';
 
-function ensureDefaultAdminUser() {
-  const users = getUsers();
-  if (!users[ADMIN_USERNAME]) {
-    users[ADMIN_USERNAME] = { name: ADMIN_USERNAME, password: ADMIN_PASSWORD };
-    saveUsers(users);
+async function ensureDefaultAdminUser() {
+  try {
+    await fetchJson(API_BASE + '/users/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: ADMIN_USERNAME, password: ADMIN_PASSWORD })
+    });
+    return;
+  } catch (err) {
+    try {
+      await fetchJson(API_BASE + '/users', {
+        method: 'POST',
+        body: JSON.stringify({ username: ADMIN_USERNAME, password: ADMIN_PASSWORD })
+      });
+    } catch (createErr) {
+      // If the admin account already exists, the login attempt above would have succeeded.
+    }
   }
 }
 
@@ -673,7 +684,7 @@ if (signupTabBtn) {
   signupTabBtn.addEventListener('click', () => setAuthMode('signup'));
 }
 
-authForm.addEventListener('submit', e => {
+authForm.addEventListener('submit', async e => {
   e.preventDefault();
   const name = normalizeName(authName.value);
   const pass = (authPass.value || '').trim();
@@ -682,27 +693,38 @@ authForm.addEventListener('submit', e => {
     return;
   }
 
-  const users = getUsers();
-
-  if (authMode === 'signup') {
-    if (users[name]) {
-      alert('That account already exists. Please sign in instead.');
+  try {
+    if (authMode === 'signup') {
+      await fetchJson(API_BASE + '/users', {
+        method: 'POST',
+        body: JSON.stringify({ username: name, password: pass })
+      });
+      logInUser(name);
+      alert('Account created successfully.');
       return;
     }
-    users[name] = { name, password: pass };
-    saveUsers(users);
-    logInUser(name);
-    alert('Account created successfully.');
-    return;
-  }
 
-  const user = users[name];
-  if (!user || user.password !== pass) {
+    const result = await fetchJson(API_BASE + '/users/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: name, password: pass })
+    });
+
+    if (result && result.ok) {
+      logInUser(result.username || name);
+      return;
+    }
+
     alert('Wrong username or password.');
-    return;
-  }
+  } catch (err) {
+    if (authMode === 'signup') {
+      alert(err && err.message && err.message.includes('User exists')
+        ? 'That account already exists. Please sign in instead.'
+        : 'Could not create the account right now.');
+      return;
+    }
 
-  logInUser(name);
+    alert('Wrong username or password.');
+  }
 });
 
 ensureDefaultAdminUser();

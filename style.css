@@ -9,12 +9,42 @@
 .schedule-table td:nth-child(2),.schedule-table td:nth-child(3){width:320px}
 
 @media (max-width:720px){
+	.table-wrap{overflow-x:visible}
 	.schedule-table thead{display:none}
-	.schedule-table, .schedule-table tbody, .schedule-table tr, .schedule-table td{display:block;width:100%}
-	.schedule-table tr{margin-bottom:12px}
-	.schedule-table td{border:1px solid var(--line);padding:10px;color:var(--text)}
-	.schedule-table td:first-child{background:rgba(74,222,128,0.08)}
-	.schedule-table td:before{content:attr(data-label);font-weight:700;display:block;margin-bottom:6px;color:var(--accent-3)}
+	.schedule-table,.schedule-table tbody,.schedule-table tr,.schedule-table td{display:block;width:100%}
+	.schedule-table{border:none;background:transparent;max-width:none}
+	.schedule-table tbody{display:flex;flex-direction:column;gap:12px}
+	.schedule-table tr{
+		margin:0;
+		background:linear-gradient(180deg,rgba(17,29,24,0.96),rgba(12,22,18,0.96));
+		border:1px solid var(--line);
+		border-radius:14px;
+		overflow:hidden;
+		box-shadow:0 10px 24px rgba(0,0,0,0.18)
+	}
+	.schedule-table td{
+		border:none;
+		border-bottom:1px solid var(--line);
+		padding:12px 14px;
+		color:var(--text);
+		display:flex;
+		align-items:flex-start;
+		gap:10px
+	}
+	.schedule-table td:last-child{border-bottom:none}
+	.schedule-table td:first-child{
+		background:rgba(74,222,128,0.08);
+		font-weight:700;
+		color:var(--text)
+	}
+	.schedule-table td:before{
+		content:attr(data-label);
+		font-weight:700;
+		display:inline-block;
+		min-width:102px;
+		color:var(--accent-3)
+	}
+	.schedule-table td:nth-child(2),.schedule-table td:nth-child(3){width:100%}
 }
 :root{
 	--bg:#07130d;
@@ -249,6 +279,20 @@ body.locked main,.locked header{filter:blur(2px) grayscale(.08);pointer-events:n
 	}
 	.login-card{
 		padding:16px 14px;
+	}
+	.term-card{
+		padding:12px 10px;
+	}
+	.table-wrap{
+		margin-top:10px;
+	}
+	.schedule-table td{
+		padding:10px 12px;
+		gap:8px;
+	}
+	.schedule-table td:before{
+		min-width:86px;
+		font-size:11px;
 	}
 }
 
