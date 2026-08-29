@@ -12,6 +12,27 @@ DB_PATH = os.path.join(ROOT, "database.db")
 app = Flask(__name__)
 
 
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get('Origin')
+    allowed_origin = 'https://bakirsehic4-crypto.github.io'
+    if origin and origin.startswith('https://bakirsehic4-crypto.github.io'):
+        response.headers['Access-Control-Allow-Origin'] = origin
+    else:
+        response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    response.headers['Access-Control-Max-Age'] = '86400'
+    return response
+
+
+@app.route('/', methods=['GET', 'OPTIONS'])
+def index():
+    if request.method == 'OPTIONS':
+        return '', 200
+    return jsonify({"ok": True, "message": "API ready"})
+
+
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
