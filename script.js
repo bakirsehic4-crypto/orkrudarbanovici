@@ -857,10 +857,6 @@ authForm.addEventListener('submit', async e => {
 
   try {
     if (authMode === 'signup') {
-      await fetchJson(API_BASE + '/users', {
-        method: 'POST',
-        body: JSON.stringify({ username: name, password: pass })
-      });
       const result = await fetchJson(API_BASE + '/users', {
         method: 'POST',
         body: JSON.stringify({ username: name, password: pass })
@@ -868,7 +864,7 @@ authForm.addEventListener('submit', async e => {
       if (result && result.avatar) {
         setProfileImage(result.avatar);
       }
-      logInUser(name);
+      logInUser(result.username || name);
       alert('Account created successfully.');
       return;
     }
@@ -889,9 +885,12 @@ authForm.addEventListener('submit', async e => {
     alert('Wrong username or password.');
   } catch (err) {
     if (authMode === 'signup') {
-      alert(err && err.message && err.message.includes('User exists')
-        ? 'That account already exists. Please sign in instead.'
-        : 'Could not create the account right now.');
+      const message = err && err.message ? err.message : '';
+      if (message.includes('User exists') || message.includes('409')) {
+        alert('That account already exists. Please sign in instead.');
+      } else {
+        alert('Could not create the account right now.');
+      }
       return;
     }
 
