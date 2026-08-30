@@ -14,21 +14,25 @@ except ImportError:
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(ROOT, "database.db")
-DATABASE_URL = os.environ.get("DATABASE_URL")
 
 app = Flask(__name__)
 
 
+def get_database_url():
+    return os.environ.get("DATABASE_URL")
+
+
 def is_postgres() -> bool:
-    return bool(DATABASE_URL) and psycopg2 is not None
+    return bool(get_database_url()) and psycopg2 is not None
 
 
 def require_postgres():
-    if not DATABASE_URL:
+    db_url = get_database_url()
+    if not db_url:
         raise RuntimeError("DATABASE_URL is not set. Configure Postgres in Render environment variables.")
     if psycopg2 is None:
         raise RuntimeError("psycopg2 is not installed.")
-    return DATABASE_URL
+    return db_url
 
 
 @app.after_request
@@ -142,7 +146,12 @@ def init_db():
 
 @app.before_request
 def ensure_db():
-    init_db()
+    if not is_postgres():
+        return None
+    try:
+        init_db()
+    except Exception as exc:
+        return jsonify({"ok": False, "db": "postgres", "message": str(exc)}), 503
 
 
 @app.route('/debug-db', methods=['GET'])
@@ -460,9 +469,6 @@ def login_user():
         return jsonify({"ok": True, "username": row["username"], "avatar": row["avatar"]})
     finally:
         conn.close()
-
-
-init_db()
 
 
 if __name__ == '__main__':
