@@ -7,10 +7,10 @@ from typing import Any
 from flask import Flask, jsonify, request
 
 try:
-    import psycopg2
-    import psycopg2.extras
+    import psycopg
+    from psycopg.rows import dict_row
 except ImportError:
-    psycopg2 = None
+    psycopg = None
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(ROOT, "database.db")
@@ -23,15 +23,15 @@ def get_database_url():
 
 
 def is_postgres() -> bool:
-    return bool(get_database_url()) and psycopg2 is not None
+    return bool(get_database_url()) and psycopg is not None
 
 
 def require_postgres():
     db_url = get_database_url()
     if not db_url:
         raise RuntimeError("DATABASE_URL is not set. Configure Postgres in Render environment variables.")
-    if psycopg2 is None:
-        raise RuntimeError("psycopg2 is not installed.")
+    if psycopg is None:
+        raise RuntimeError("psycopg is not installed.")
     return db_url
 
 
@@ -64,8 +64,8 @@ def index():
 
 def get_db_connection():
     if not is_postgres():
-        raise RuntimeError("Postgres is required. Set DATABASE_URL and keep psycopg2 installed.")
-    conn = psycopg2.connect(require_postgres(), sslmode="require")
+        raise RuntimeError("Postgres is required. Set DATABASE_URL and keep psycopg installed.")
+    conn = psycopg.connect(require_postgres(), sslmode="require")
     conn.autocommit = False
     return conn
 
@@ -80,7 +80,7 @@ def db_execute(conn, query, params=()):
 
 def db_fetchall(conn, query, params=()):
     if is_postgres():
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(row_factory=dict_row)
         cur.execute(query, params)
         rows = cur.fetchall()
         cur.close()
@@ -90,7 +90,7 @@ def db_fetchall(conn, query, params=()):
 
 def db_fetchone(conn, query, params=()):
     if is_postgres():
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(row_factory=dict_row)
         cur.execute(query, params)
         row = cur.fetchone()
         cur.close()
@@ -158,7 +158,7 @@ def ensure_db():
 def debug_db():
     return jsonify({
         "DATABASE_URL_set": bool(os.environ.get("DATABASE_URL")),
-        "psycopg2_importable": psycopg2 is not None,
+        "psycopg_importable": psycopg is not None,
         "db": "postgres" if is_postgres() else "sqlite",
         "message": "debug metadata"
     })
