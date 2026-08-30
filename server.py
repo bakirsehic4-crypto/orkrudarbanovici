@@ -50,15 +50,15 @@ def add_cors_headers(response):
     response.headers['Access-Control-Max-Age'] = '86400'
     return response
 
-@app.route('/<path:dummy>', methods=['OPTIONS'])
-def handle_options(dummy):
+
+@app.route('/', defaults={'path': ''}, methods=['OPTIONS'])
+@app.route('/<path:path>', methods=['OPTIONS'])
+def options_handler(path):
     return '', 200
 
 
-@app.route('/', methods=['GET', 'OPTIONS'])
+@app.route('/', methods=['GET'])
 def index():
-    if request.method == 'OPTIONS':
-        return '', 200
     if not is_postgres():
         return jsonify({
             "ok": False,
@@ -151,24 +151,9 @@ def init_db():
                 avatar TEXT
             )
         """)
-        if not is_postgres():
-            try:
-                db_execute(conn, "ALTER TABLE users ADD COLUMN avatar TEXT")
-            except sqlite3.OperationalError:
-                pass
         conn.commit()
     finally:
         conn.close()
-
-
-@app.before_request
-def ensure_db():
-    if not is_postgres():
-        return None
-    try:
-        init_db()
-    except Exception as exc:
-        return jsonify({"ok": False, "db": "postgres", "message": str(exc)}), 503
 
 
 @app.route('/debug-db', methods=['GET'])
@@ -209,7 +194,7 @@ def save_announcements():
             for item in payload:
                 db_execute(
                     conn,
-                    "INSERT INTO announcements (message, ts) VALUES (%s, %s)" if is_postgres() else "INSERT INTO announcements (message, ts) VALUES (?, ?)",
+                    "INSERT INTO announcements (message, ts) VALUES (%s, %s)",
                     (item.get("message", ""), int(item.get("ts", 0))),
                 )
             conn.commit()
@@ -218,7 +203,7 @@ def save_announcements():
         if isinstance(payload, dict):
             db_execute(
                 conn,
-                "INSERT INTO announcements (message, ts) VALUES (%s, %s)" if is_postgres() else "INSERT INTO announcements (message, ts) VALUES (?, ?)",
+                "INSERT INTO announcements (message, ts) VALUES (%s, %s)",
                 (payload.get("message", ""), int(payload.get("ts", 0))),
             )
             conn.commit()
@@ -250,10 +235,6 @@ def save_chat_message():
     image = str(payload.get("image") or "").strip() or None
     if not username or (not message and not image):
         return jsonify({"ok": False, "error": "Korisničko ime ili slika su obavezni"}), 400
-    if len(message) > 1000:
-        return jsonify({"ok": False, "error": "Message is too long"}), 400
-    if image and (not image.startswith("data:image/") or len(image) > 6_000_000):
-        return jsonify({"ok": False, "error": "Image is invalid or too large"}), 400
 
     conn = get_db_connection()
     try:
@@ -299,119 +280,6 @@ def get_matches():
         conn.close()
 
 
-@app.route('/api/matches', methods=['POST'])
-def save_matches():
-    access_error = require_admin()
-    if access_error:
-        return access_error
-    payload = request.get_json(silent=True)
-    conn = get_db_connection()
-    try:
-        if isinstance(payload, list):
-            db_execute(conn, "DELETE FROM matches")
-            for item in payload:
-                db_execute(
-                    conn,
-                    """
-                    INSERT INTO matches (id, opponent, datetime, location, competition, generation, played, home_score, away_score)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """ if is_postgres() else """
-                    INSERT INTO matches (id, opponent, datetime, location, competition, generation, played, home_score, away_score)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        item.get("id"),
-                        item.get("opponent", ""),
-                        item.get("datetime", ""),
-                        item.get("location", "home"),
-                        item.get("competition"),
-                        item.get("generation"),
-                        int(bool(item.get("played", False))),
-                        item.get("homeScore"),
-                        item.get("awayScore"),
-                    ),
-                )
-            conn.commit()
-            return jsonify({"ok": True, "data": payload})
-
-        if isinstance(payload, dict):
-            match_id = payload.get("id") or f"m_{int(payload.get('datetime', 0) or 0)}"
-            if is_postgres():
-                db_execute(
-                    conn,
-                    """
-                    INSERT INTO matches (id, opponent, datetime, location, competition, generation, played, home_score, away_score)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT(id) DO UPDATE SET
-                        opponent=EXCLUDED.opponent,
-                        datetime=EXCLUDED.datetime,
-                        location=EXCLUDED.location,
-                        competition=EXCLUDED.competition,
-                        generation=EXCLUDED.generation,
-                        played=EXCLUDED.played,
-                        home_score=EXCLUDED.home_score,
-                        away_score=EXCLUDED.away_score
-                    """,
-                    (
-                        match_id,
-                        payload.get("opponent", ""),
-                        payload.get("datetime", ""),
-                        payload.get("location", "home"),
-                        payload.get("competition"),
-                        payload.get("generation"),
-                        int(bool(payload.get("played", False))),
-                        payload.get("homeScore"),
-                        payload.get("awayScore"),
-                    ),
-                )
-            else:
-                db_execute(
-                    conn,
-                    """
-                    INSERT INTO matches (id, opponent, datetime, location, competition, generation, played, home_score, away_score)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        opponent=excluded.opponent,
-                        datetime=excluded.datetime,
-                        location=excluded.location,
-                        competition=excluded.competition,
-                        generation=excluded.generation,
-                        played=excluded.played,
-                        home_score=excluded.home_score,
-                        away_score=excluded.away_score
-                    """,
-                    (
-                        match_id,
-                        payload.get("opponent", ""),
-                        payload.get("datetime", ""),
-                        payload.get("location", "home"),
-                        payload.get("competition"),
-                        payload.get("generation"),
-                        int(bool(payload.get("played", False))),
-                        payload.get("homeScore"),
-                        payload.get("awayScore"),
-                    ),
-                )
-            conn.commit()
-        return jsonify({"ok": True})
-    finally:
-        conn.close()
-
-
-@app.route('/api/matches/<match_id>', methods=['DELETE'])
-def delete_match(match_id):
-    access_error = require_admin()
-    if access_error:
-        return access_error
-    conn = get_db_connection()
-    try:
-        db_execute(conn, "DELETE FROM matches WHERE id = %s" if is_postgres() else "DELETE FROM matches WHERE id = ?", (match_id,))
-        conn.commit()
-        return jsonify({"ok": True})
-    finally:
-        conn.close()
-
-
 @app.route('/api/teams', methods=['GET'])
 def get_teams():
     conn = get_db_connection()
@@ -423,39 +291,13 @@ def get_teams():
         conn.close()
 
 
-@app.route('/api/teams', methods=['POST'])
-def save_teams():
-    payload = request.get_json(silent=True)
-    conn = get_db_connection()
-    try:
-        if isinstance(payload, dict):
-            for name, badge in payload.items():
-                if is_postgres():
-                    db_execute(
-                        conn,
-                        "INSERT INTO teams (name, badge) VALUES (%s, %s) ON CONFLICT(name) DO UPDATE SET badge=EXCLUDED.badge",
-                        (name, badge),
-                    )
-                else:
-                    db_execute(
-                        conn,
-                        "INSERT INTO teams (name, badge) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET badge=excluded.badge",
-                        (name, badge),
-                    )
-            conn.commit()
-            return jsonify({"ok": True, "data": payload})
-        return jsonify({"ok": False, "error": "Expected dict"})
-    finally:
-        conn.close()
-
-
 @app.route('/api/users/<username>', methods=['GET'])
 def get_user(username):
     conn = get_db_connection()
     try:
         row = db_fetchone(
             conn,
-            "SELECT username, avatar FROM users WHERE username = %s" if is_postgres() else "SELECT username, avatar FROM users WHERE username = ?",
+            "SELECT username, avatar FROM users WHERE username = %s",
             (username,),
         )
         if not row:
@@ -465,27 +307,8 @@ def get_user(username):
         conn.close()
 
 
-@app.route('/api/users/<username>/avatar', methods=['PUT'])
-def update_user_avatar(username):
-    data = request.get_json(silent=True) or {}
-    avatar = str(data.get('avatar') or '').strip()
-
-    conn = get_db_connection()
-    try:
-        updated = db_execute(
-            conn,
-            "UPDATE users SET avatar = %s WHERE username = %s" if is_postgres() else "UPDATE users SET avatar = ? WHERE username = ?",
-            (avatar or None, username),
-        )
-        conn.commit()
-        if updated.rowcount == 0:
-            return jsonify({"ok": False, "error": "User not found"}), 404
-        return jsonify({"ok": True, "username": username, "avatar": avatar or None})
-    finally:
-        conn.close()
-
-
 @app.route('/api/users', methods=['POST'])
+@app.route('/api/users/register', methods=['POST'])
 def create_user():
     data = request.get_json(silent=True) or {}
     username = str(data.get('username') or '').strip()
@@ -498,7 +321,7 @@ def create_user():
     try:
         existing = db_fetchone(
             conn,
-            "SELECT 1 FROM users WHERE username = %s" if is_postgres() else "SELECT 1 FROM users WHERE username = ?",
+            "SELECT 1 FROM users WHERE username = %s",
             (username,),
         )
         if existing:
@@ -506,7 +329,7 @@ def create_user():
 
         db_execute(
             conn,
-            "INSERT INTO users (username, password, avatar) VALUES (%s, %s, %s)" if is_postgres() else "INSERT INTO users (username, password, avatar) VALUES (?, ?, ?)",
+            "INSERT INTO users (username, password, avatar) VALUES (%s, %s, %s)",
             (username, password, avatar),
         )
         conn.commit()
@@ -525,7 +348,7 @@ def login_user():
     try:
         row = db_fetchone(
             conn,
-            "SELECT username, avatar FROM users WHERE username = %s AND password = %s" if is_postgres() else "SELECT username, avatar FROM users WHERE username = ? AND password = ?",
+            "SELECT username, avatar FROM users WHERE username = %s AND password = %s",
             (username, password),
         )
         if not row:
@@ -536,5 +359,10 @@ def login_user():
 
 
 if __name__ == '__main__':
+    if is_postgres():
+        try:
+            init_db()
+        except Exception as e:
+            print("Init DB error:", e)
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=False)
