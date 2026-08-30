@@ -3,6 +3,9 @@ const form = document.getElementById('announcementForm');
 const messageInput = document.getElementById('message');
 const listEl = document.getElementById('announcements');
 const clearBtn = document.getElementById('clearBtn');
+const chatForm = document.getElementById('chatForm');
+const chatMessageInput = document.getElementById('chatMessage');
+const chatMessagesEl = document.getElementById('chatMessages');
 const matchForm = document.getElementById('matchForm');
 const clubName = 'ORK Rudar Banovići';
 const API_BASE = 'https://orkrudarbanovici-1.onrender.com/api';
@@ -76,6 +79,17 @@ function formatDisplayDateTime(dateValue) {
   const hours = String(date.getHours()).padStart(2, '0');
   const minutes = String(date.getMinutes()).padStart(2, '0');
   return `${day}.${month}.${year}. ${hours}:${minutes}`;
+}
+
+function formatRelativeTime(dateValue) {
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - new Date(dateValue).getTime()) / 1000));
+  if (elapsedSeconds < 60) return 'just now';
+  const minutes = Math.floor(elapsedSeconds / 60);
+  if (minutes < 60) return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} ${days === 1 ? 'day' : 'days'} ago`;
 }
 
 function currentUser() {
@@ -164,7 +178,7 @@ async function saveProfileImageToServer(imageData) {
 
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-Club-User': currentUser() },
     ...options
   });
   if (!response.ok) {
@@ -192,6 +206,67 @@ async function saveAnnouncements(arr) {
     localStorage.setItem('announcements', JSON.stringify(arr));
   } catch (err) {
     localStorage.setItem('announcements', JSON.stringify(arr));
+  }
+}
+
+async function loadChatMessages() {
+  try {
+    const data = await fetchJson(API_BASE + '/chat');
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    return readLocal('chat_messages', []);
+  }
+}
+
+async function saveChatMessage(item) {
+  const localMessages = readLocal('chat_messages', []);
+  localMessages.unshift(item);
+  writeLocal('chat_messages', localMessages.slice(0, 100));
+  await fetchJson(API_BASE + '/chat', {
+    method: 'POST',
+    body: JSON.stringify(item)
+  });
+}
+
+function renderChatMessages(items) {
+  if (!chatMessagesEl) return;
+  chatMessagesEl.innerHTML = '';
+  if (items.length === 0) {
+    chatMessagesEl.innerHTML = '<li class="chat-empty">No messages yet.</li>';
+    return;
+  }
+  const orderedItems = [...items].sort((a, b) => Number(a.ts) - Number(b.ts));
+  orderedItems.forEach((item) => {
+    const li = document.createElement('li');
+    li.className = 'chat-message';
+    li.classList.toggle('own-message', item.username === currentUser());
+    const identity = document.createElement('div');
+    identity.className = 'chat-identity';
+    const avatar = document.createElement('div');
+    avatar.className = 'chat-avatar';
+    if (item.avatar) {
+      avatar.innerHTML = `<img src="${item.avatar}" alt="" />`;
+    } else {
+      avatar.textContent = (item.username || '?').charAt(0).toUpperCase();
+    }
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = `${item.username} · ${formatRelativeTime(item.ts)}`;
+    identity.append(avatar, meta);
+    const body = document.createElement('div');
+    body.className = 'msg';
+    body.textContent = item.message;
+    li.append(identity, body);
+    chatMessagesEl.appendChild(li);
+  });
+}
+
+async function renderChat() {
+  setPanelLoading('viewChat', true);
+  try {
+    renderChatMessages(await loadChatMessages());
+  } finally {
+    setPanelLoading('viewChat', false);
   }
 }
 
@@ -223,7 +298,7 @@ async function render() {
       li.className = 'announcement';
       const meta = document.createElement('div');
       meta.className = 'meta';
-      meta.textContent = formatDisplayDateTime(it.ts);
+      meta.textContent = `Trener · ${formatRelativeTime(it.ts)} · ${formatDisplayDateTime(it.ts)}`;
       const msg = document.createElement('div');
       msg.className = 'msg';
       msg.textContent = it.message;
@@ -234,6 +309,23 @@ async function render() {
   } finally {
     setPanelLoading(panelId, false);
   }
+}
+
+if (chatForm) {
+  chatForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const username = currentUser();
+    const message = chatMessageInput.value.trim();
+    if (!username || !message) return;
+    const item = { username, message, ts: Date.now() };
+    try {
+      await saveChatMessage(item);
+      chatMessageInput.value = '';
+      await renderChat();
+    } catch (err) {
+      alert('Could not post the message right now.');
+    }
+  });
 }
 
 form.addEventListener('submit', async e => {
@@ -282,14 +374,16 @@ async function loadMatches() {
 }
 
 async function saveMatches(arr) {
-  writeLocal('matches', arr);
+  if (!isAdminUser(currentUser())) return false;
   try {
     await fetchJson(API_BASE + '/matches', {
       method: 'POST',
       body: JSON.stringify(arr)
     });
+    writeLocal('matches', arr);
+    return true;
   } catch (err) {
-    // fallback while server is not available
+    return false;
   }
 }
 
@@ -388,6 +482,7 @@ async function renderMatches() {
 
     const actions = document.createElement('div');
     actions.className = 'match-actions';
+    const canManageMatches = isAdminUser(currentUser());
 
     const playBtn = document.createElement('button');
     playBtn.className = 'small btn';
@@ -397,7 +492,12 @@ async function renderMatches() {
     const del = document.createElement('button');
     del.className = 'small btn secondary';
     del.textContent = 'Delete';
+    del.hidden = !canManageMatches;
     del.addEventListener('click', async () => {
+      if (!isAdminUser(currentUser())) {
+        alert('Only the admin account can delete matches.');
+        return;
+      }
       if (confirm('Delete this match?')) {
         const arr = await loadMatches();
         const next = arr.filter((m) => m.id !== it.id);
@@ -430,6 +530,7 @@ async function renderMatches() {
 
     const actions = document.createElement('div');
     actions.className = 'match-actions';
+    const canManageResults = isAdminUser(currentUser());
 
     const clubScore = it.location === 'home' ? it.homeScore : it.awayScore;
     const oppScore = it.location === 'home' ? it.awayScore : it.homeScore;
@@ -442,7 +543,12 @@ async function renderMatches() {
     const del = document.createElement('button');
     del.className = 'small btn secondary';
     del.textContent = 'Delete';
+    del.hidden = !canManageResults;
     del.addEventListener('click', async () => {
+      if (!isAdminUser(currentUser())) {
+        alert('Only the admin account can delete results.');
+        return;
+      }
       if (confirm('Delete this match?')) {
         const arr = await loadMatches();
         const next = arr.filter((m) => m.id !== it.id);
@@ -692,7 +798,8 @@ const brandEl = document.querySelector('.brand');
 const panels = {
   announcements: document.getElementById('viewAnnouncements'),
   termini: document.getElementById('viewTermini'),
-  matches: document.getElementById('viewMatches')
+  matches: document.getElementById('viewMatches'),
+  chat: document.getElementById('viewChat')
 };
 
 function showView(viewName) {
@@ -735,6 +842,16 @@ if (matchesBtn) {
     showView('matches');
     menuList.classList.remove('show');
     menuBtn.setAttribute('aria-expanded', 'false');
+  });
+}
+
+const chatBtn = document.getElementById('chatBtn');
+if (chatBtn) {
+  chatBtn.addEventListener('click', () => {
+    showView('chat');
+    menuList.classList.remove('show');
+    menuBtn.setAttribute('aria-expanded', 'false');
+    renderChat();
   });
 }
 
@@ -911,4 +1028,5 @@ if (!isLoggedIn()) {
 
 updateAuthUi();
 render();
+renderChat();
 

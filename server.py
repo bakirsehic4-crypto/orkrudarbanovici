@@ -16,6 +16,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(ROOT, "database.db")
 
 app = Flask(__name__)
+ADMIN_USERNAME = "admin"
 
 
 def get_database_url():
@@ -33,6 +34,12 @@ def require_postgres():
     if psycopg is None:
         raise RuntimeError("psycopg is not installed.")
     return db_url
+
+
+def require_admin():
+    if request.headers.get("X-Club-User") != ADMIN_USERNAME:
+        return jsonify({"ok": False, "error": "Admin access required"}), 403
+    return None
 
 
 @app.after_request
@@ -109,6 +116,14 @@ def init_db():
             )
         """)
         db_execute(conn, """
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id SERIAL PRIMARY KEY,
+                username TEXT NOT NULL,
+                message TEXT NOT NULL,
+                ts BIGINT NOT NULL
+            )
+        """)
+        db_execute(conn, """
             CREATE TABLE IF NOT EXISTS matches (
                 id TEXT PRIMARY KEY,
                 opponent TEXT NOT NULL,
@@ -176,7 +191,7 @@ def get_announcements():
     conn = get_db_connection()
     try:
         rows = db_fetchall(conn, "SELECT message, ts FROM announcements ORDER BY ts DESC")
-        data = [{"message": row["message"], "ts": row["ts"]} for row in rows]
+        data = [{"message": row["message"], "ts": row["ts"], "author": "Trener"} for row in rows]
         return jsonify(data)
     finally:
         conn.close()
@@ -205,6 +220,44 @@ def save_announcements():
                 (payload.get("message", ""), int(payload.get("ts", 0))),
             )
             conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
+@app.route('/api/chat', methods=['GET'])
+def get_chat_messages():
+    conn = get_db_connection()
+    try:
+        rows = db_fetchall(conn, """
+            SELECT chat_messages.username, chat_messages.message, chat_messages.ts, users.avatar
+            FROM chat_messages
+            LEFT JOIN users ON users.username = chat_messages.username
+            ORDER BY chat_messages.ts ASC
+        """)
+        return jsonify([{"username": row["username"], "message": row["message"], "ts": row["ts"], "avatar": row["avatar"]} for row in rows])
+    finally:
+        conn.close()
+
+
+@app.route('/api/chat', methods=['POST'])
+def save_chat_message():
+    payload = request.get_json(silent=True) or {}
+    username = str(payload.get("username") or "").strip()
+    message = str(payload.get("message") or "").strip()
+    if not username or not message:
+        return jsonify({"ok": False, "error": "Username and message are required"}), 400
+    if len(message) > 1000:
+        return jsonify({"ok": False, "error": "Message is too long"}), 400
+
+    conn = get_db_connection()
+    try:
+        db_execute(
+            conn,
+            "INSERT INTO chat_messages (username, message, ts) VALUES (%s, %s, %s)",
+            (username, message, int(payload.get("ts") or 0)),
+        )
+        conn.commit()
         return jsonify({"ok": True})
     finally:
         conn.close()
@@ -243,6 +296,9 @@ def get_matches():
 
 @app.route('/api/matches', methods=['POST'])
 def save_matches():
+    access_error = require_admin()
+    if access_error:
+        return access_error
     payload = request.get_json(silent=True)
     conn = get_db_connection()
     try:
@@ -339,6 +395,9 @@ def save_matches():
 
 @app.route('/api/matches/<match_id>', methods=['DELETE'])
 def delete_match(match_id):
+    access_error = require_admin()
+    if access_error:
+        return access_error
     conn = get_db_connection()
     try:
         db_execute(conn, "DELETE FROM matches WHERE id = %s" if is_postgres() else "DELETE FROM matches WHERE id = ?", (match_id,))
