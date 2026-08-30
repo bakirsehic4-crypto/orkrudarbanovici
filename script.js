@@ -1,10 +1,11 @@
-// Simple announcements app with server-friendly storage
+// Aplikacija obavijesti i klupskog chata.
 const form = document.getElementById('announcementForm');
 const messageInput = document.getElementById('message');
 const listEl = document.getElementById('announcements');
 const clearBtn = document.getElementById('clearBtn');
 const chatForm = document.getElementById('chatForm');
 const chatMessageInput = document.getElementById('chatMessage');
+const chatImageInput = document.getElementById('chatImage');
 const chatMessagesEl = document.getElementById('chatMessages');
 const matchForm = document.getElementById('matchForm');
 const clubName = 'ORK Rudar Banovići';
@@ -212,27 +213,28 @@ async function saveAnnouncements(arr) {
 async function loadChatMessages() {
   try {
     const data = await fetchJson(API_BASE + '/chat');
+    localStorage.removeItem('chat_messages');
     return Array.isArray(data) ? data : [];
   } catch (err) {
-    return readLocal('chat_messages', []);
+    return [];
   }
 }
 
 async function saveChatMessage(item) {
-  const localMessages = readLocal('chat_messages', []);
-  localMessages.unshift(item);
-  writeLocal('chat_messages', localMessages.slice(0, 100));
   await fetchJson(API_BASE + '/chat', {
     method: 'POST',
     body: JSON.stringify(item)
   });
+  const localMessages = readLocal('chat_messages', []);
+  localMessages.unshift(item);
+  writeLocal('chat_messages', localMessages.slice(0, 100));
 }
 
 function renderChatMessages(items) {
   if (!chatMessagesEl) return;
   chatMessagesEl.innerHTML = '';
   if (items.length === 0) {
-    chatMessagesEl.innerHTML = '<li class="chat-empty">No messages yet.</li>';
+    chatMessagesEl.innerHTML = '<li class="chat-empty">Još nema poruka.</li>';
     return;
   }
   const orderedItems = [...items].sort((a, b) => Number(a.ts) - Number(b.ts));
@@ -256,6 +258,13 @@ function renderChatMessages(items) {
     const body = document.createElement('div');
     body.className = 'msg';
     body.textContent = item.message;
+    if (item.image) {
+      const image = document.createElement('img');
+      image.className = 'chat-message-image';
+      image.src = item.image;
+      image.alt = 'Slika u poruci';
+      body.appendChild(image);
+    }
     li.append(identity, body);
     chatMessagesEl.appendChild(li);
   });
@@ -277,7 +286,7 @@ function setPanelLoading(panelId, loading) {
   if (!loader) {
     loader = document.createElement('div');
     loader.className = 'panel-loader';
-    loader.innerHTML = '<span class="mini-spinner" aria-hidden="true"></span><span>Loading...</span>';
+    loader.innerHTML = '<span class="mini-spinner" aria-hidden="true"></span><span>Učitavanje...</span>';
     panel.insertBefore(loader, panel.firstChild);
   }
   loader.classList.toggle('active', loading);
@@ -290,7 +299,7 @@ async function render() {
     const items = await loadAnnouncements();
     listEl.innerHTML = '';
     if (items.length === 0) {
-      listEl.innerHTML = '<li class="announcement">No announcements yet.</li>';
+      listEl.innerHTML = '<li class="announcement">Još nema obavijesti.</li>';
       return;
     }
     items.forEach(it => {
@@ -316,14 +325,30 @@ if (chatForm) {
     event.preventDefault();
     const username = currentUser();
     const message = chatMessageInput.value.trim();
-    if (!username || !message) return;
-    const item = { username, message, ts: Date.now() };
+    const imageFile = chatImageInput.files && chatImageInput.files[0];
+    if (!username || (!message && !imageFile)) return;
+    if (imageFile && imageFile.size > 4 * 1024 * 1024) {
+      alert('Slika može imati najviše 4 MB.');
+      return;
+    }
+    const sendMessage = (image) => {
+      const item = { username, message, image, ts: Date.now() };
+      return saveChatMessage(item).then(async () => {
+        chatMessageInput.value = '';
+        chatImageInput.value = '';
+        await renderChat();
+      });
+    };
     try {
-      await saveChatMessage(item);
-      chatMessageInput.value = '';
-      await renderChat();
+      if (imageFile) {
+        const reader = new FileReader();
+        reader.onload = () => sendMessage(String(reader.result || '')).catch(() => alert('Poruka nije mogla biti poslana.'));
+        reader.readAsDataURL(imageFile);
+      } else {
+        await sendMessage(null);
+      }
     } catch (err) {
-      alert('Could not post the message right now.');
+      alert('Poruka nije mogla biti poslana.');
     }
   });
 }
@@ -943,9 +968,9 @@ function showLogin(show) {
 function setAuthMode(mode) {
   authMode = mode;
   const isLogin = mode === 'login';
-  if (authTitle) authTitle.textContent = isLogin ? 'Sign in' : 'Create account';
-  if (authSubmitBtn) authSubmitBtn.textContent = isLogin ? 'Enter' : 'Create account';
-  if (authHint) authHint.textContent = isLogin ? 'Use your saved account to continue.' : 'Create your account and save your password.';
+  if (authTitle) authTitle.textContent = isLogin ? 'Prijava' : 'Kreiraj račun';
+  if (authSubmitBtn) authSubmitBtn.textContent = isLogin ? 'Uđi' : 'Kreiraj račun';
+  if (authHint) authHint.textContent = isLogin ? 'Prijavite se da nastavite.' : 'Kreirajte račun i sačuvajte lozinku.';
   if (loginTabBtn) loginTabBtn.classList.toggle('active', isLogin);
   if (signupTabBtn) signupTabBtn.classList.toggle('active', !isLogin);
 }

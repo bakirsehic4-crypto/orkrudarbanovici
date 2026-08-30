@@ -51,7 +51,7 @@ def add_cors_headers(response):
     else:
         response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Club-User'
     response.headers['Access-Control-Max-Age'] = '86400'
     return response
 
@@ -111,7 +111,7 @@ def init_db():
         db_execute(conn, """
             CREATE TABLE IF NOT EXISTS announcements (
                 id SERIAL PRIMARY KEY,
-                message TEXT NOT NULL,
+                message TEXT,
                 ts BIGINT NOT NULL
             )
         """)
@@ -120,9 +120,12 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 username TEXT NOT NULL,
                 message TEXT NOT NULL,
+                image TEXT,
                 ts BIGINT NOT NULL
             )
         """)
+        db_execute(conn, "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS image TEXT")
+        db_execute(conn, "ALTER TABLE chat_messages ALTER COLUMN message DROP NOT NULL")
         db_execute(conn, """
             CREATE TABLE IF NOT EXISTS matches (
                 id TEXT PRIMARY KEY,
@@ -230,12 +233,12 @@ def get_chat_messages():
     conn = get_db_connection()
     try:
         rows = db_fetchall(conn, """
-            SELECT chat_messages.username, chat_messages.message, chat_messages.ts, users.avatar
+            SELECT chat_messages.username, chat_messages.message, chat_messages.image, chat_messages.ts, users.avatar
             FROM chat_messages
             LEFT JOIN users ON users.username = chat_messages.username
             ORDER BY chat_messages.ts ASC
         """)
-        return jsonify([{"username": row["username"], "message": row["message"], "ts": row["ts"], "avatar": row["avatar"]} for row in rows])
+        return jsonify([{"username": row["username"], "message": row["message"], "image": row["image"], "ts": row["ts"], "avatar": row["avatar"]} for row in rows])
     finally:
         conn.close()
 
@@ -245,17 +248,20 @@ def save_chat_message():
     payload = request.get_json(silent=True) or {}
     username = str(payload.get("username") or "").strip()
     message = str(payload.get("message") or "").strip()
-    if not username or not message:
-        return jsonify({"ok": False, "error": "Username and message are required"}), 400
+    image = str(payload.get("image") or "").strip() or None
+    if not username or (not message and not image):
+        return jsonify({"ok": False, "error": "Korisničko ime ili slika su obavezni"}), 400
     if len(message) > 1000:
         return jsonify({"ok": False, "error": "Message is too long"}), 400
+    if image and (not image.startswith("data:image/") or len(image) > 6_000_000):
+        return jsonify({"ok": False, "error": "Image is invalid or too large"}), 400
 
     conn = get_db_connection()
     try:
         db_execute(
             conn,
-            "INSERT INTO chat_messages (username, message, ts) VALUES (%s, %s, %s)",
-            (username, message, int(payload.get("ts") or 0)),
+            "INSERT INTO chat_messages (username, message, image, ts) VALUES (%s, %s, %s, %s)",
+            (username, message, image, int(payload.get("ts") or 0)),
         )
         conn.commit()
         return jsonify({"ok": True})
