@@ -145,6 +145,16 @@ def ensure_db():
     init_db()
 
 
+@app.route('/debug-db', methods=['GET'])
+def debug_db():
+    return jsonify({
+        "DATABASE_URL_set": bool(os.environ.get("DATABASE_URL")),
+        "psycopg2_importable": psycopg2 is not None,
+        "db": "postgres" if is_postgres() else "sqlite",
+        "message": "debug metadata"
+    })
+
+
 @app.route('/api/health', methods=['GET'])
 def health():
     if not is_postgres():
