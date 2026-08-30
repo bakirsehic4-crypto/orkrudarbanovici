@@ -44,16 +44,15 @@ def require_admin():
 
 @app.after_request
 def add_cors_headers(response):
-    origin = request.headers.get('Origin')
-    allowed_origin = 'https://bakirsehic4-crypto.github.io'
-    if origin and origin.startswith('https://bakirsehic4-crypto.github.io'):
-        response.headers['Access-Control-Allow-Origin'] = origin
-    else:
-        response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Club-User'
     response.headers['Access-Control-Max-Age'] = '86400'
     return response
+
+@app.route('/<path:dummy>', methods=['OPTIONS'])
+def handle_options(dummy):
+    return '', 200
 
 
 @app.route('/', methods=['GET', 'OPTIONS'])
