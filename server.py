@@ -23,6 +23,14 @@ def is_postgres() -> bool:
     return bool(DATABASE_URL) and psycopg2 is not None
 
 
+def require_postgres():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not set. Configure Postgres in Render environment variables.")
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 is not installed.")
+    return DATABASE_URL
+
+
 @app.after_request
 def add_cors_headers(response):
     origin = request.headers.get('Origin')
@@ -41,16 +49,20 @@ def add_cors_headers(response):
 def index():
     if request.method == 'OPTIONS':
         return '', 200
-    return jsonify({"ok": True, "message": "API ready", "db": "postgres" if is_postgres() else "sqlite"})
+    if not is_postgres():
+        return jsonify({
+            "ok": False,
+            "message": "DATABASE_URL is missing or Postgres is unavailable.",
+            "db": "sqlite"
+        }), 500
+    return jsonify({"ok": True, "message": "API ready", "db": "postgres"})
 
 
 def get_db_connection():
-    if is_postgres():
-        conn = psycopg2.connect(DATABASE_URL)
-        conn.autocommit = False
-        return conn
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    if not is_postgres():
+        raise RuntimeError("Postgres is required. Set DATABASE_URL and keep psycopg2 installed.")
+    conn = psycopg2.connect(require_postgres(), sslmode="require")
+    conn.autocommit = False
     return conn
 
 
@@ -135,7 +147,9 @@ def ensure_db():
 
 @app.route('/api/health', methods=['GET'])
 def health():
-    return jsonify({"ok": True, "db": "postgres" if is_postgres() else "sqlite"})
+    if not is_postgres():
+        return jsonify({"ok": False, "db": "sqlite", "message": "DATABASE_URL missing"}), 500
+    return jsonify({"ok": True, "db": "postgres", "message": "API ready"})
 
 
 @app.route('/api/announcements', methods=['GET'])
