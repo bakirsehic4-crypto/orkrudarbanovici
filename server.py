@@ -126,6 +126,7 @@ def init_db():
         """)
         db_execute(conn, "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS image TEXT")
         db_execute(conn, "ALTER TABLE chat_messages ALTER COLUMN message DROP NOT NULL")
+        
         db_execute(conn, """
             CREATE TABLE IF NOT EXISTS matches (
                 id TEXT PRIMARY KEY,
@@ -152,6 +153,19 @@ def init_db():
                 avatar TEXT
             )
         """)
+
+        # Ensure unique constraints exist for ON CONFLICT queries on pre-existing tables
+        if is_postgres():
+            try:
+                db_execute(conn, "ALTER TABLE teams ADD CONSTRAINT teams_pkey PRIMARY KEY (name)")
+            except Exception:
+                conn.rollback()
+
+            try:
+                db_execute(conn, "ALTER TABLE matches ADD CONSTRAINT matches_pkey PRIMARY KEY (id)")
+            except Exception:
+                conn.rollback()
+
         conn.commit()
     finally:
         conn.close()
@@ -281,7 +295,6 @@ def handle_matches():
                 competition = str(item.get("competition") or "").strip() or None
                 generation = str(item.get("generation") or "").strip() or None
                 
-                # Coerce boolean value safely
                 raw_played = item.get("played")
                 played = True if raw_played in [True, 1, "1", "true", "True"] else False
 
@@ -349,12 +362,10 @@ def handle_teams():
             if payload is None:
                 return jsonify({"ok": False, "error": "Invalid JSON"}), 400
 
-            # Handle both list and single object representations from frontend
             teams_list = []
             if isinstance(payload, list):
                 teams_list = payload
             elif isinstance(payload, dict):
-                # If frontend sent an object map like {"Team A": "badge_url"}
                 if "name" not in payload and "badge" not in payload:
                     teams_list = [{"name": k, "badge": v} for k, v in payload.items()]
                 else:
