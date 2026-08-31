@@ -278,11 +278,12 @@ def handle_matches():
                 opponent = str(item.get("opponent") or "").strip()
                 datetime_val = str(item.get("datetime") or "").strip()
                 location = str(item.get("location") or "").strip()
-                competition = item.get("competition")
-                generation = item.get("generation")
+                competition = str(item.get("competition") or "").strip() or None
+                generation = str(item.get("generation") or "").strip() or None
                 
-                # Convert explicitly to boolean to match Postgres BOOLEAN column
-                played = bool(item.get("played"))
+                # Coerce boolean value safely
+                raw_played = item.get("played")
+                played = True if raw_played in [True, 1, "1", "true", "True"] else False
 
                 raw_home = item.get("homeScore") if item.get("homeScore") is not None else item.get("home_score")
                 raw_away = item.get("awayScore") if item.get("awayScore") is not None else item.get("away_score")
@@ -294,7 +295,7 @@ def handle_matches():
                     conn,
                     """
                     INSERT INTO matches (id, opponent, datetime, location, competition, generation, played, home_score, away_score)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s::boolean, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         opponent = EXCLUDED.opponent,
                         datetime = EXCLUDED.datetime,
@@ -344,22 +345,37 @@ def handle_teams():
     conn = get_db_connection()
     try:
         if request.method == 'POST':
-            payload = request.get_json(silent=True) or {}
-            name = str(payload.get("name") or "").strip()
-            badge = str(payload.get("badge") or "").strip()
-            if not name:
-                return jsonify({"ok": False, "error": "Team name is required"}), 400
+            payload = request.get_json(silent=True)
+            if payload is None:
+                return jsonify({"ok": False, "error": "Invalid JSON"}), 400
 
-            db_execute(
-                conn,
-                """
-                INSERT INTO teams (name, badge) VALUES (%s, %s)
-                ON CONFLICT (name) DO UPDATE SET badge = EXCLUDED.badge
-                """,
-                (name, badge)
-            )
+            # Handle both list and single object representations from frontend
+            teams_list = []
+            if isinstance(payload, list):
+                teams_list = payload
+            elif isinstance(payload, dict):
+                # If frontend sent an object map like {"Team A": "badge_url"}
+                if "name" not in payload and "badge" not in payload:
+                    teams_list = [{"name": k, "badge": v} for k, v in payload.items()]
+                else:
+                    teams_list = [payload]
+
+            for item in teams_list:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                badge = str(item.get("badge") or "").strip()
+                if name:
+                    db_execute(
+                        conn,
+                        """
+                        INSERT INTO teams (name, badge) VALUES (%s, %s)
+                        ON CONFLICT (name) DO UPDATE SET badge = EXCLUDED.badge
+                        """,
+                        (name, badge)
+                    )
+
             conn.commit()
-            return jsonify({"ok": True, "message": "Team saved successfully"}), 201
 
         rows = db_fetchall(conn, "SELECT name, badge FROM teams")
         data = {row["name"]: row["badge"] for row in rows}
