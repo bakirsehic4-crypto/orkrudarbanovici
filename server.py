@@ -154,7 +154,6 @@ def init_db():
             )
         """)
 
-        # Ensure unique constraints exist for ON CONFLICT queries on pre-existing tables
         if is_postgres():
             try:
                 db_execute(conn, "ALTER TABLE teams ADD CONSTRAINT teams_pkey PRIMARY KEY (name)")
@@ -273,10 +272,15 @@ def parse_int_or_none(val):
         return None
 
 
-@app.route('/api/matches', methods=['GET', 'POST'])
+@app.route('/api/matches', methods=['GET', 'POST', 'DELETE'])
 def handle_matches():
     conn = get_db_connection()
     try:
+        if request.method == 'DELETE':
+            db_execute(conn, "DELETE FROM matches")
+            conn.commit()
+            return jsonify({"ok": True, "message": "All matches deleted"})
+
         if request.method == 'POST':
             payload = request.get_json(silent=True)
             if payload is None:
@@ -323,7 +327,9 @@ def handle_matches():
                 )
 
             conn.commit()
+            return jsonify({"ok": True, "message": "Saved successfully"}), 201
 
+        # GET method
         rows = db_fetchall(
             conn,
             """
@@ -353,10 +359,26 @@ def handle_matches():
         conn.close()
 
 
-@app.route('/api/teams', methods=['GET', 'POST'])
+@app.route('/api/matches/<match_id>', methods=['DELETE'])
+def delete_single_match(match_id):
+    conn = get_db_connection()
+    try:
+        db_execute(conn, "DELETE FROM matches WHERE id = %s", (str(match_id),))
+        conn.commit()
+        return jsonify({"ok": True, "message": "Match deleted successfully"})
+    finally:
+        conn.close()
+
+
+@app.route('/api/teams', methods=['GET', 'POST', 'DELETE'])
 def handle_teams():
     conn = get_db_connection()
     try:
+        if request.method == 'DELETE':
+            db_execute(conn, "DELETE FROM teams")
+            conn.commit()
+            return jsonify({"ok": True, "message": "All teams deleted"})
+
         if request.method == 'POST':
             payload = request.get_json(silent=True)
             if payload is None:
@@ -387,6 +409,7 @@ def handle_teams():
                     )
 
             conn.commit()
+            return jsonify({"ok": True, "message": "Teams saved successfully"}), 201
 
         rows = db_fetchall(conn, "SELECT name, badge FROM teams")
         data = {row["name"]: row["badge"] for row in rows}
