@@ -134,7 +134,7 @@ def init_db():
                 location TEXT NOT NULL,
                 competition TEXT,
                 generation TEXT,
-                played INTEGER NOT NULL DEFAULT 0,
+                played BOOLEAN NOT NULL DEFAULT FALSE,
                 home_score INTEGER,
                 away_score INTEGER
             )
@@ -250,6 +250,15 @@ def save_chat_message():
         conn.close()
 
 
+def parse_int_or_none(val):
+    if val is None or val == "":
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
 @app.route('/api/matches', methods=['GET', 'POST'])
 def handle_matches():
     conn = get_db_connection()
@@ -271,16 +280,21 @@ def handle_matches():
                 location = str(item.get("location") or "").strip()
                 competition = item.get("competition")
                 generation = item.get("generation")
-                played = 1 if item.get("played") else 0
+                
+                # Convert explicitly to boolean to match Postgres BOOLEAN column
+                played = bool(item.get("played"))
 
-                home_score = item.get("homeScore") if item.get("homeScore") is not None else item.get("home_score")
-                away_score = item.get("awayScore") if item.get("awayScore") is not None else item.get("away_score")
+                raw_home = item.get("homeScore") if item.get("homeScore") is not None else item.get("home_score")
+                raw_away = item.get("awayScore") if item.get("awayScore") is not None else item.get("away_score")
+
+                home_score = parse_int_or_none(raw_home)
+                away_score = parse_int_or_none(raw_away)
 
                 db_execute(
                     conn,
                     """
                     INSERT INTO matches (id, opponent, datetime, location, competition, generation, played, home_score, away_score)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::boolean, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         opponent = EXCLUDED.opponent,
                         datetime = EXCLUDED.datetime,
@@ -295,7 +309,6 @@ def handle_matches():
                 )
 
             conn.commit()
-            return jsonify({"ok": True, "message": "Matches saved successfully"}), 201
 
         rows = db_fetchall(
             conn,
@@ -318,6 +331,8 @@ def handle_matches():
                 "played": bool(row["played"]),
                 "homeScore": row["home_score"],
                 "awayScore": row["away_score"],
+                "home_score": row["home_score"],
+                "away_score": row["away_score"]
             })
         return jsonify(data)
     finally:
