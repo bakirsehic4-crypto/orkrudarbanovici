@@ -2,6 +2,7 @@
 import json
 import os
 import sqlite3
+import uuid
 from typing import Any
 
 from flask import Flask, jsonify, request
@@ -249,10 +250,42 @@ def save_chat_message():
         conn.close()
 
 
-@app.route('/api/matches', methods=['GET'])
-def get_matches():
+@app.route('/api/matches', methods=['GET', 'POST'])
+def handle_matches():
     conn = get_db_connection()
     try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+            match_id = str(payload.get("id") or str(uuid.uuid4()))
+            opponent = str(payload.get("opponent") or "").strip()
+            datetime_val = str(payload.get("datetime") or "").strip()
+            location = str(payload.get("location") or "").strip()
+            competition = payload.get("competition")
+            generation = payload.get("generation")
+            played = 1 if payload.get("played") else 0
+            home_score = payload.get("homeScore") if payload.get("homeScore") is not None else payload.get("home_score")
+            away_score = payload.get("awayScore") if payload.get("awayScore") is not None else payload.get("away_score")
+
+            db_execute(
+                conn,
+                """
+                INSERT INTO matches (id, opponent, datetime, location, competition, generation, played, home_score, away_score)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    opponent = EXCLUDED.opponent,
+                    datetime = EXCLUDED.datetime,
+                    location = EXCLUDED.location,
+                    competition = EXCLUDED.competition,
+                    generation = EXCLUDED.generation,
+                    played = EXCLUDED.played,
+                    home_score = EXCLUDED.home_score,
+                    away_score = EXCLUDED.away_score
+                """,
+                (match_id, opponent, datetime_val, location, competition, generation, played, home_score, away_score)
+            )
+            conn.commit()
+            return jsonify({"ok": True, "message": "Match saved successfully"}), 201
+
         rows = db_fetchall(
             conn,
             """
@@ -265,7 +298,7 @@ def get_matches():
         data = []
         for row in rows:
             data.append({
-                "id": row["id"],
+                "id": str(row["id"]),
                 "opponent": row["opponent"],
                 "datetime": row["datetime"],
                 "location": row["location"],
@@ -280,10 +313,28 @@ def get_matches():
         conn.close()
 
 
-@app.route('/api/teams', methods=['GET'])
-def get_teams():
+@app.route('/api/teams', methods=['GET', 'POST'])
+def handle_teams():
     conn = get_db_connection()
     try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+            name = str(payload.get("name") or "").strip()
+            badge = str(payload.get("badge") or "").strip()
+            if not name:
+                return jsonify({"ok": False, "error": "Team name is required"}), 400
+
+            db_execute(
+                conn,
+                """
+                INSERT INTO teams (name, badge) VALUES (%s, %s)
+                ON CONFLICT (name) DO UPDATE SET badge = EXCLUDED.badge
+                """,
+                (name, badge)
+            )
+            conn.commit()
+            return jsonify({"ok": True, "message": "Team saved successfully"}), 201
+
         rows = db_fetchall(conn, "SELECT name, badge FROM teams")
         data = {row["name"]: row["badge"] for row in rows}
         return jsonify(data)
