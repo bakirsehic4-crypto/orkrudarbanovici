@@ -255,36 +255,47 @@ def handle_matches():
     conn = get_db_connection()
     try:
         if request.method == 'POST':
-            payload = request.get_json(silent=True) or {}
-            match_id = str(payload.get("id") or str(uuid.uuid4()))
-            opponent = str(payload.get("opponent") or "").strip()
-            datetime_val = str(payload.get("datetime") or "").strip()
-            location = str(payload.get("location") or "").strip()
-            competition = payload.get("competition")
-            generation = payload.get("generation")
-            played = 1 if payload.get("played") else 0
-            home_score = payload.get("homeScore") if payload.get("homeScore") is not None else payload.get("home_score")
-            away_score = payload.get("awayScore") if payload.get("awayScore") is not None else payload.get("away_score")
+            payload = request.get_json(silent=True)
+            if payload is None:
+                return jsonify({"ok": False, "error": "Invalid JSON"}), 400
 
-            db_execute(
-                conn,
-                """
-                INSERT INTO matches (id, opponent, datetime, location, competition, generation, played, home_score, away_score)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET
-                    opponent = EXCLUDED.opponent,
-                    datetime = EXCLUDED.datetime,
-                    location = EXCLUDED.location,
-                    competition = EXCLUDED.competition,
-                    generation = EXCLUDED.generation,
-                    played = EXCLUDED.played,
-                    home_score = EXCLUDED.home_score,
-                    away_score = EXCLUDED.away_score
-                """,
-                (match_id, opponent, datetime_val, location, competition, generation, played, home_score, away_score)
-            )
+            matches_list = payload if isinstance(payload, list) else [payload]
+
+            for item in matches_list:
+                if not isinstance(item, dict):
+                    continue
+
+                match_id = str(item.get("id") or str(uuid.uuid4()))
+                opponent = str(item.get("opponent") or "").strip()
+                datetime_val = str(item.get("datetime") or "").strip()
+                location = str(item.get("location") or "").strip()
+                competition = item.get("competition")
+                generation = item.get("generation")
+                played = 1 if item.get("played") else 0
+
+                home_score = item.get("homeScore") if item.get("homeScore") is not None else item.get("home_score")
+                away_score = item.get("awayScore") if item.get("awayScore") is not None else item.get("away_score")
+
+                db_execute(
+                    conn,
+                    """
+                    INSERT INTO matches (id, opponent, datetime, location, competition, generation, played, home_score, away_score)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        opponent = EXCLUDED.opponent,
+                        datetime = EXCLUDED.datetime,
+                        location = EXCLUDED.location,
+                        competition = EXCLUDED.competition,
+                        generation = EXCLUDED.generation,
+                        played = EXCLUDED.played,
+                        home_score = EXCLUDED.home_score,
+                        away_score = EXCLUDED.away_score
+                    """,
+                    (match_id, opponent, datetime_val, location, competition, generation, played, home_score, away_score)
+                )
+
             conn.commit()
-            return jsonify({"ok": True, "message": "Match saved successfully"}), 201
+            return jsonify({"ok": True, "message": "Matches saved successfully"}), 201
 
         rows = db_fetchall(
             conn,
