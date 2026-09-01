@@ -445,6 +445,32 @@ def get_user(username):
         conn.close()
 
 
+@app.route('/api/users/<username>/avatar', methods=['PUT', 'POST'])
+def update_user_avatar(username):
+    data = request.get_json(silent=True) or {}
+    avatar = str(data.get('avatar') or '').strip() or None
+
+    conn = get_db_connection()
+    try:
+        existing = db_fetchone(
+            conn,
+            "SELECT 1 FROM users WHERE username = %s",
+            (username,),
+        )
+        if not existing:
+            return jsonify({"ok": False, "error": "User not found"}), 404
+
+        db_execute(
+            conn,
+            "UPDATE users SET avatar = %s WHERE username = %s",
+            (avatar, username),
+        )
+        conn.commit()
+        return jsonify({"ok": True, "username": username, "avatar": avatar})
+    finally:
+        conn.close()
+
+
 @app.route('/api/users', methods=['POST'])
 @app.route('/api/users/register', methods=['POST'])
 def create_user():

@@ -241,8 +241,11 @@ async function saveProfileImageToServer(imageData) {
       method: 'PUT',
       body: JSON.stringify({ avatar: imageData })
     });
+    await fetchCurrentUserProfile();
   } catch (err) {
-    // ignore server errors and keep local copy if needed
+    // keep a local copy if the server is temporarily unreachable
+    setProfileImage(imageData);
+    updateAuthUi();
   }
 }
 
@@ -410,13 +413,12 @@ if (chatForm) {
       alert('Slika može imati najviše 4 MB.');
       return;
     }
-    const sendMessage = (image) => {
-      const item = { username, message, image, ts: Date.now() };
-      return saveChatMessage(item).then(async () => {
-        chatMessageInput.value = '';
-        chatImageInput.value = '';
-        await renderChat();
-      });
+    const sendMessage = async (image) => {
+      const item = { username, message: message || '', image, ts: Date.now() };
+      await saveChatMessage(item);
+      chatMessageInput.value = '';
+      chatImageInput.value = '';
+      await renderChat();
     };
     try {
       if (imageFile) {
@@ -1026,8 +1028,8 @@ if (profileUpload && avatarEl) {
     reader.onload = async () => {
       const data = String(reader.result || '');
       setProfileImage(data);
-      await saveProfileImageToServer(data);
       updateAuthUi();
+      await saveProfileImageToServer(data);
     };
     reader.readAsDataURL(file);
   });
@@ -1044,6 +1046,7 @@ if (removeAvatarBtn) {
         method: 'PUT',
         body: JSON.stringify({ avatar: '' })
       });
+      await fetchCurrentUserProfile();
     } catch (err) {
       // ignore server issues, local state is still cleared
     }
