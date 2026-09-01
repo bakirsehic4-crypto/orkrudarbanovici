@@ -8,6 +8,12 @@
 		<link rel="stylesheet" href="style.css" />
 	</head>
 	<body>
+		<div id="globalLoader" class="global-loader" aria-live="polite" aria-busy="false" hidden>
+			<div class="global-loader-card">
+				<span class="global-spinner" aria-hidden="true"></span>
+				<span id="globalLoaderText">Učitavanje...</span>
+			</div>
+		</div>
 		<div id="loginOverlay" class="login-overlay" aria-hidden="false">
 			<div class="login-card">
 				<div class="auth-tabs">

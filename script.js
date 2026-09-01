@@ -15,6 +15,41 @@ const ADMIN_PASSWORD = 'admin123';
 const USERS_KEY = 'club_users';
 const SESSION_USER_KEY = 'club_session_user';
 const PROFILE_IMAGE_KEY = 'club_profile_image';
+const memoryStorage = {};
+
+function safeStorageGet(key) {
+  try {
+    const value = window.localStorage.getItem(key);
+    if (value !== null) {
+      memoryStorage[key] = value;
+      return value;
+    }
+  } catch (err) {
+    // localStorage may be disabled or unavailable on some mobile browsers.
+  }
+  return Object.prototype.hasOwnProperty.call(memoryStorage, key) ? memoryStorage[key] : null;
+}
+
+function safeStorageSet(key, value) {
+  const serializedValue = String(value);
+  try {
+    window.localStorage.setItem(key, serializedValue);
+    memoryStorage[key] = serializedValue;
+    return true;
+  } catch (err) {
+    memoryStorage[key] = serializedValue;
+    return false;
+  }
+}
+
+function safeStorageRemove(key) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch (err) {
+    // ignore storage removal failures
+  }
+  delete memoryStorage[key];
+}
 
 async function fetchCurrentUserProfile() {
   const username = currentUser();
@@ -25,7 +60,7 @@ async function fetchCurrentUserProfile() {
     if (data && data.avatar) {
       setProfileImage(data.avatar);
     } else {
-      localStorage.removeItem(PROFILE_IMAGE_KEY);
+      safeStorageRemove(PROFILE_IMAGE_KEY);
     }
     updateAuthUi();
   } catch (err) {
@@ -94,7 +129,7 @@ function formatRelativeTime(dateValue) {
 }
 
 function currentUser() {
-  const raw = localStorage.getItem(SESSION_USER_KEY);
+  const raw = safeStorageGet(SESSION_USER_KEY);
   return (raw || '').trim();
 }
 
@@ -103,15 +138,15 @@ function isAdminUser(username) {
 }
 
 function getProfileImage() {
-  return localStorage.getItem(PROFILE_IMAGE_KEY) || '';
+  return safeStorageGet(PROFILE_IMAGE_KEY) || '';
 }
 
 function setProfileImage(imageData) {
   if (!imageData) {
-    localStorage.removeItem(PROFILE_IMAGE_KEY);
+    safeStorageRemove(PROFILE_IMAGE_KEY);
     return;
   }
-  localStorage.setItem(PROFILE_IMAGE_KEY, imageData);
+  safeStorageSet(PROFILE_IMAGE_KEY, imageData);
 }
 
 function updateAuthUi() {
@@ -194,7 +229,7 @@ async function loadAnnouncements() {
     const data = await fetchJson(API_BASE + '/announcements');
     return Array.isArray(data) ? data : [];
   } catch (err) {
-    const raw = localStorage.getItem('announcements');
+    const raw = safeStorageGet('announcements');
     try { return raw ? JSON.parse(raw) : []; } catch { return []; }
   }
 }
@@ -205,16 +240,16 @@ async function saveAnnouncements(arr) {
       method: 'POST',
       body: JSON.stringify(arr)
     });
-    localStorage.setItem('announcements', JSON.stringify(arr));
+    safeStorageSet('announcements', JSON.stringify(arr));
   } catch (err) {
-    localStorage.setItem('announcements', JSON.stringify(arr));
+    safeStorageSet('announcements', JSON.stringify(arr));
   }
 }
 
 async function loadChatMessages() {
   try {
     const data = await fetchJson(API_BASE + '/chat');
-    localStorage.removeItem('chat_messages');
+    safeStorageRemove('chat_messages');
     return Array.isArray(data) ? data : [];
   } catch (err) {
     return [];
@@ -291,6 +326,15 @@ function setPanelLoading(panelId, loading) {
     panel.insertBefore(loader, panel.firstChild);
   }
   loader.classList.toggle('active', loading);
+}
+
+function setGlobalLoading(loading, text = 'Učitavanje...') {
+  const loader = document.getElementById('globalLoader');
+  const label = document.getElementById('globalLoaderText');
+  if (!loader || !label) return;
+  label.textContent = text;
+  loader.hidden = !loading;
+  loader.setAttribute('aria-busy', String(loading));
 }
 
 async function render() {
@@ -375,7 +419,7 @@ clearBtn.addEventListener('click', () => {
 
 function readLocal(key, fallback) {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = safeStorageGet(key);
     return raw ? JSON.parse(raw) : fallback;
   } catch (err) {
     return fallback;
@@ -384,7 +428,7 @@ function readLocal(key, fallback) {
 
 function writeLocal(key, value) {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    safeStorageSet(key, JSON.stringify(value));
   } catch (err) {
     // ignore storage failures
   }
@@ -656,20 +700,25 @@ function showResultInputs(id, container, match) {
       return;
     }
 
-    const arr = await loadMatches();
-    const updated = arr.map((m) => {
-      if (m.id === id) {
-        return { ...m, played: true, homeScore, awayScore };
-      }
-      return m;
-    });
+    setGlobalLoading(true, 'Spremanje rezultata...');
+    try {
+      const arr = await loadMatches();
+      const updated = arr.map((m) => {
+        if (m.id === id) {
+          return { ...m, played: true, homeScore, awayScore };
+        }
+        return m;
+      });
 
-    const saved = await saveMatches(updated);
-    if (!saved) {
-      alert('Only the admin account can update match results.');
-      return;
+      const saved = await saveMatches(updated);
+      if (!saved) {
+        alert('Only the admin account can update match results.');
+        return;
+      }
+      renderMatches();
+    } finally {
+      setGlobalLoading(false);
     }
-    renderMatches();
   });
 
   cancelBtn.addEventListener('click', renderMatches);
@@ -774,24 +823,29 @@ if (matchForm) {
   });
 
   async function addMatch(opponent, datetime, location, competition, generation) {
-    const arr = await loadMatches();
-    arr.push({
-      id: 'm_' + Date.now(),
-      opponent,
-      datetime,
-      location,
-      competition,
-      generation,
-      played: false
-    });
-    const saved = await saveMatches(arr);
-    if (!saved) {
-      alert('Only the admin account can add matches.');
-      return;
+    setGlobalLoading(true, 'Dodavanje utakmice...');
+    try {
+      const arr = await loadMatches();
+      arr.push({
+        id: 'm_' + Date.now(),
+        opponent,
+        datetime,
+        location,
+        competition,
+        generation,
+        played: false
+      });
+      const saved = await saveMatches(arr);
+      if (!saved) {
+        alert('Only the admin account can add matches.');
+        return;
+      }
+      matchForm.reset();
+      populateOpponentSelect();
+      renderMatches();
+    } finally {
+      setGlobalLoading(false);
     }
-    matchForm.reset();
-    populateOpponentSelect();
-    renderMatches();
   }
 
   if (clearMatches) {
@@ -907,7 +961,7 @@ if (chatBtn) {
 const logoutBtn = document.getElementById('logoutBtn');
 if (logoutBtn) {
   logoutBtn.addEventListener('click', () => {
-    localStorage.removeItem(SESSION_USER_KEY);
+    safeStorageRemove(SESSION_USER_KEY);
     showView('announcements');
     showLogin(true);
   });
@@ -945,7 +999,7 @@ if (removeAvatarBtn) {
     const username = currentUser();
     if (!username) return;
 
-    localStorage.removeItem(PROFILE_IMAGE_KEY);
+    safeStorageRemove(PROFILE_IMAGE_KEY);
     try {
       await fetchJson(API_BASE + '/users/' + encodeURIComponent(username) + '/avatar', {
         method: 'PUT',
@@ -1000,7 +1054,7 @@ function setAuthMode(mode) {
 }
 
 function logInUser(username) {
-  localStorage.setItem(SESSION_USER_KEY, username);
+  safeStorageSet(SESSION_USER_KEY, username);
   updateAuthUi();
   showLogin(false);
 }
