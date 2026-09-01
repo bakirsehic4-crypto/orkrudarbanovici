@@ -38,7 +38,8 @@ def require_postgres():
 
 
 def require_admin():
-    if request.headers.get("X-Club-User") != ADMIN_USERNAME:
+    requested_user = (request.headers.get("X-Club-User") or "").strip()
+    if requested_user != ADMIN_USERNAME:
         return jsonify({"ok": False, "error": "Admin access required"}), 403
     return None
 

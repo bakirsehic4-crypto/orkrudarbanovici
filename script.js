@@ -95,7 +95,7 @@ function formatRelativeTime(dateValue) {
 
 function currentUser() {
   const raw = localStorage.getItem(SESSION_USER_KEY);
-  return raw || '';
+  return (raw || '').trim();
 }
 
 function isAdminUser(username) {
@@ -178,8 +178,9 @@ async function saveProfileImageToServer(imageData) {
 }
 
 async function fetchJson(url, options = {}) {
+  const username = currentUser();
   const response = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', 'X-Club-User': currentUser() },
+    headers: { 'Content-Type': 'application/json', 'X-Club-User': username },
     ...options
   });
   if (!response.ok) {
@@ -512,7 +513,13 @@ async function renderMatches() {
     const playBtn = document.createElement('button');
     playBtn.className = 'small btn';
     playBtn.textContent = 'Enter Result';
-    playBtn.addEventListener('click', () => showResultInputs(it.id, el, it));
+    playBtn.hidden = !canManageMatches;
+    playBtn.addEventListener('click', () => {
+      if (!isAdminUser(currentUser())) {
+        return;
+      }
+      showResultInputs(it.id, el, it);
+    });
 
     const del = document.createElement('button');
     del.className = 'small btn secondary';
@@ -524,10 +531,12 @@ async function renderMatches() {
         return;
       }
       if (confirm('Delete this match?')) {
-        const arr = await loadMatches();
-        const next = arr.filter((m) => m.id !== it.id);
-        await saveMatches(next);
-        renderMatches();
+        try {
+          await fetchJson(API_BASE + '/matches/' + encodeURIComponent(it.id), { method: 'DELETE' });
+          renderMatches();
+        } catch (err) {
+          alert('Deleting failed. Please try again.');
+        }
       }
     });
 
@@ -575,10 +584,12 @@ async function renderMatches() {
         return;
       }
       if (confirm('Delete this match?')) {
-        const arr = await loadMatches();
-        const next = arr.filter((m) => m.id !== it.id);
-        await saveMatches(next);
-        renderMatches();
+        try {
+          await fetchJson(API_BASE + '/matches/' + encodeURIComponent(it.id), { method: 'DELETE' });
+          renderMatches();
+        } catch (err) {
+          alert('Deleting failed. Please try again.');
+        }
       }
     });
     actions.appendChild(del);
@@ -599,6 +610,10 @@ async function renderMatches() {
 }
 
 function showResultInputs(id, container, match) {
+  if (!isAdminUser(currentUser())) {
+    return;
+  }
+
   const actions = container.querySelector('.match-actions');
   if (!actions) return;
   actions.innerHTML = '';
@@ -648,7 +663,12 @@ function showResultInputs(id, container, match) {
       }
       return m;
     });
-    await saveMatches(updated);
+
+    const saved = await saveMatches(updated);
+    if (!saved) {
+      alert('Only the admin account can update match results.');
+      return;
+    }
     renderMatches();
   });
 
@@ -764,7 +784,11 @@ if (matchForm) {
       generation,
       played: false
     });
-    await saveMatches(arr);
+    const saved = await saveMatches(arr);
+    if (!saved) {
+      alert('Only the admin account can add matches.');
+      return;
+    }
     matchForm.reset();
     populateOpponentSelect();
     renderMatches();
