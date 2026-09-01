@@ -277,28 +277,27 @@ def handle_matches():
     conn = get_db_connection()
     try:
         if request.method == 'DELETE':
+            access_error = require_admin()
+            if access_error:
+                return access_error
             db_execute(conn, "DELETE FROM matches")
             conn.commit()
             return jsonify({"ok": True, "message": "All matches deleted"})
 
         if request.method == 'POST':
+            access_error = require_admin()
+            if access_error:
+                return access_error
+
             payload = request.get_json(silent=True)
             if payload is None:
                 return jsonify({"ok": False, "error": "Invalid JSON"}), 400
 
             matches_list = payload if isinstance(payload, list) else [payload]
 
-            # Check if any match is trying to set scores (admin-only)
             for item in matches_list:
                 if not isinstance(item, dict):
                     continue
-                has_score = (item.get("homeScore") is not None or item.get("awayScore") is not None or 
-                            item.get("home_score") is not None or item.get("away_score") is not None)
-                if has_score:
-                    access_error = require_admin()
-                    if access_error:
-                        return access_error
-                    break
 
                 match_id = str(item.get("id") or str(uuid.uuid4()))
                 opponent = str(item.get("opponent") or "").strip()
@@ -306,7 +305,7 @@ def handle_matches():
                 location = str(item.get("location") or "").strip()
                 competition = str(item.get("competition") or "").strip() or None
                 generation = str(item.get("generation") or "").strip() or None
-                
+
                 raw_played = item.get("played")
                 played = True if raw_played in [True, 1, "1", "true", "True"] else False
 
