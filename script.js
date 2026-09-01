@@ -15,38 +15,68 @@ const ADMIN_PASSWORD = 'admin123';
 const USERS_KEY = 'club_users';
 const SESSION_USER_KEY = 'club_session_user';
 const PROFILE_IMAGE_KEY = 'club_profile_image';
+const MAX_STORAGE_BYTES = 1_200_000;
 const memoryStorage = {};
 
-function safeStorageGet(key) {
+function getStorageCandidates() {
+  const candidates = [];
   try {
-    const value = window.localStorage.getItem(key);
-    if (value !== null) {
-      memoryStorage[key] = value;
-      return value;
-    }
+    if (window.localStorage) candidates.push(window.localStorage);
   } catch (err) {
-    // localStorage may be disabled or unavailable on some mobile browsers.
+    // ignore unavailable storage
+  }
+  try {
+    if (window.sessionStorage) candidates.push(window.sessionStorage);
+  } catch (err) {
+    // ignore unavailable storage
+  }
+  return candidates;
+}
+
+function safeStorageGet(key) {
+  for (const storage of getStorageCandidates()) {
+    try {
+      const value = storage.getItem(key);
+      if (value !== null) {
+        memoryStorage[key] = value;
+        return value;
+      }
+    } catch (err) {
+      // storage may be blocked on some mobile browsers
+    }
   }
   return Object.prototype.hasOwnProperty.call(memoryStorage, key) ? memoryStorage[key] : null;
 }
 
 function safeStorageSet(key, value) {
   const serializedValue = String(value);
-  try {
-    window.localStorage.setItem(key, serializedValue);
-    memoryStorage[key] = serializedValue;
-    return true;
-  } catch (err) {
+  const shouldSkipStorage = key !== SESSION_USER_KEY && serializedValue.length > MAX_STORAGE_BYTES;
+
+  if (shouldSkipStorage) {
     memoryStorage[key] = serializedValue;
     return false;
   }
+
+  let saved = false;
+  for (const storage of getStorageCandidates()) {
+    try {
+      storage.setItem(key, serializedValue);
+      saved = true;
+    } catch (err) {
+      // storage may reject writes on mobile/private browsing
+    }
+  }
+  memoryStorage[key] = serializedValue;
+  return saved;
 }
 
 function safeStorageRemove(key) {
-  try {
-    window.localStorage.removeItem(key);
-  } catch (err) {
-    // ignore storage removal failures
+  for (const storage of getStorageCandidates()) {
+    try {
+      storage.removeItem(key);
+    } catch (err) {
+      // ignore storage removal failures
+    }
   }
   delete memoryStorage[key];
 }
@@ -144,6 +174,10 @@ function getProfileImage() {
 function setProfileImage(imageData) {
   if (!imageData) {
     safeStorageRemove(PROFILE_IMAGE_KEY);
+    return;
+  }
+  if (String(imageData).length > MAX_STORAGE_BYTES) {
+    memoryStorage[PROFILE_IMAGE_KEY] = String(imageData);
     return;
   }
   safeStorageSet(PROFILE_IMAGE_KEY, imageData);
@@ -428,7 +462,12 @@ function readLocal(key, fallback) {
 
 function writeLocal(key, value) {
   try {
-    safeStorageSet(key, JSON.stringify(value));
+    const serializedValue = JSON.stringify(value);
+    if (key !== SESSION_USER_KEY && serializedValue.length > MAX_STORAGE_BYTES) {
+      memoryStorage[key] = serializedValue;
+      return;
+    }
+    safeStorageSet(key, serializedValue);
   } catch (err) {
     // ignore storage failures
   }
