@@ -96,8 +96,23 @@
 						<input id="chatImage" type="file" accept="image/*" hidden />
 						<button type="submit" class="btn">Pošalji</button>
 					</form>
+					<div id="chatImageHint" class="chat-image-hint">Prvo odaberite sliku, pa kliknite „Pošalji“.</div>
 					<ul id="chatMessages" class="chat-messages"></ul>
 				</section>
+			</section>
+
+			<section id="viewGallery" class="view-panel">
+				<div class="gallery-shell">
+					<div id="galleryAdminBlock" class="gallery-admin-panel">
+						<h2>Nova slika u galeriji</h2>
+						<form id="galleryForm" class="gallery-form">
+							<input id="galleryImage" type="file" accept="image/*" required />
+							<textarea id="galleryDescription" rows="3" placeholder="Dodajte opis slike..."></textarea>
+							<button type="submit" class="btn">Objavi sliku</button>
+						</form>
+					</div>
+					<div id="galleryFeed" class="gallery-feed"></div>
+				</div>
 			</section>
 
 			<section id="viewTermini" class="view-panel">

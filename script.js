@@ -7,6 +7,10 @@ const chatForm = document.getElementById('chatForm');
 const chatMessageInput = document.getElementById('chatMessage');
 const chatImageInput = document.getElementById('chatImage');
 const chatMessagesEl = document.getElementById('chatMessages');
+const galleryForm = document.getElementById('galleryForm');
+const galleryImageInput = document.getElementById('galleryImage');
+const galleryDescriptionInput = document.getElementById('galleryDescription');
+const galleryFeedEl = document.getElementById('galleryFeed');
 const matchForm = document.getElementById('matchForm');
 const clubName = 'ORK Rudar Banovići';
 const API_BASE = 'https://orkrudarbanovici-1.onrender.com/api';
@@ -15,6 +19,7 @@ const ADMIN_PASSWORD = 'admin123';
 const USERS_KEY = 'club_users';
 const SESSION_USER_KEY = 'club_session_user';
 const PROFILE_IMAGE_KEY = 'club_profile_image';
+const GALLERY_KEY = 'club_gallery';
 const MAX_STORAGE_BYTES = 1_200_000;
 const memoryStorage = {};
 
@@ -303,6 +308,14 @@ async function saveChatMessage(item) {
   writeLocal('chat_messages', localMessages.slice(0, 100));
 }
 
+function scrollChatToBottom() {
+  if (!chatMessagesEl) return;
+  const shouldScroll = chatMessagesEl.scrollHeight > chatMessagesEl.clientHeight ? true : true;
+  if (shouldScroll) {
+    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+  }
+}
+
 function renderChatMessages(items) {
   if (!chatMessagesEl) return;
   chatMessagesEl.innerHTML = '';
@@ -341,6 +354,7 @@ function renderChatMessages(items) {
     li.append(identity, body);
     chatMessagesEl.appendChild(li);
   });
+  requestAnimationFrame(() => scrollChatToBottom());
 }
 
 async function renderChat() {
@@ -349,7 +363,161 @@ async function renderChat() {
     renderChatMessages(await loadChatMessages());
   } finally {
     setPanelLoading('viewChat', false);
+    requestAnimationFrame(() => scrollChatToBottom());
   }
+}
+
+function getGalleryItems() {
+  return readLocal(GALLERY_KEY, []);
+}
+
+function saveGalleryItems(items) {
+  writeLocal(GALLERY_KEY, items);
+}
+
+function renderGallery() {
+  const feed = document.getElementById('galleryFeed');
+  const adminBlock = document.getElementById('galleryAdminBlock');
+  if (!feed) return;
+
+  const isAdmin = isAdminUser(currentUser());
+  if (adminBlock) {
+    adminBlock.style.display = isAdmin ? 'block' : 'none';
+  }
+
+  const items = getGalleryItems();
+  feed.innerHTML = '';
+
+  if (!items.length) {
+    feed.innerHTML = '<div class="gallery-empty">Još nema slika u galeriji.</div>';
+    return;
+  }
+
+  items
+    .slice()
+    .sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0))
+    .forEach((item) => {
+      const card = document.createElement('article');
+      card.className = 'gallery-card';
+
+      const img = document.createElement('img');
+      img.className = 'gallery-image';
+      img.src = item.image;
+      img.alt = item.description || 'Galerija slika';
+
+      const body = document.createElement('div');
+      body.className = 'gallery-body';
+
+      const meta = document.createElement('div');
+      meta.className = 'gallery-meta';
+      meta.textContent = `${item.author || 'Admin'} · ${formatRelativeTime(item.ts)}`;
+
+      const desc = document.createElement('p');
+      desc.className = 'gallery-description';
+      desc.textContent = item.description || 'Bez opisa.';
+
+      const actions = document.createElement('div');
+      actions.className = 'gallery-actions';
+
+      const likeBtn = document.createElement('button');
+      likeBtn.type = 'button';
+      likeBtn.className = 'gallery-action';
+      likeBtn.textContent = `👍 ${Number(item.likes || 0)}`;
+      likeBtn.addEventListener('click', () => {
+        item.likes = Number(item.likes || 0) + 1;
+        saveGalleryItems(getGalleryItems().map((entry) => entry.id === item.id ? item : entry));
+        renderGallery();
+      });
+
+      const dislikeBtn = document.createElement('button');
+      dislikeBtn.type = 'button';
+      dislikeBtn.className = 'gallery-action';
+      dislikeBtn.textContent = `👎 ${Number(item.dislikes || 0)}`;
+      dislikeBtn.addEventListener('click', () => {
+        item.dislikes = Number(item.dislikes || 0) + 1;
+        saveGalleryItems(getGalleryItems().map((entry) => entry.id === item.id ? item : entry));
+        renderGallery();
+      });
+
+      const commentWrap = document.createElement('div');
+      commentWrap.className = 'gallery-comment-wrap';
+
+      const commentInput = document.createElement('input');
+      commentInput.type = 'text';
+      commentInput.placeholder = 'Dodaj komentar...';
+      commentInput.maxLength = 200;
+      commentInput.className = 'gallery-comment-input';
+
+      const commentBtn = document.createElement('button');
+      commentBtn.type = 'button';
+      commentBtn.className = 'btn secondary small';
+      commentBtn.textContent = 'Komentiraj';
+      commentBtn.addEventListener('click', () => {
+        const text = (commentInput.value || '').trim();
+        if (!text) return;
+        item.comments = Array.isArray(item.comments) ? item.comments : [];
+        item.comments.push({
+          user: currentUser() || 'Korisnik',
+          text,
+          ts: Date.now()
+        });
+        saveGalleryItems(getGalleryItems().map((entry) => entry.id === item.id ? item : entry));
+        renderGallery();
+      });
+
+      const commentsList = document.createElement('div');
+      commentsList.className = 'gallery-comments';
+      const comments = Array.isArray(item.comments) ? item.comments : [];
+      if (comments.length) {
+        comments.forEach((comment) => {
+          const row = document.createElement('div');
+          row.className = 'gallery-comment';
+          row.innerHTML = `<strong>${comment.user || 'Korisnik'}:</strong> ${comment.text || ''}`;
+          commentsList.appendChild(row);
+        });
+      }
+
+      commentWrap.append(commentInput, commentBtn);
+      actions.append(likeBtn, dislikeBtn);
+      body.append(meta, desc, actions, commentWrap, commentsList);
+      card.append(img, body);
+      feed.appendChild(card);
+    });
+}
+
+if (galleryForm) {
+  galleryForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!isAdminUser(currentUser())) {
+      alert('Samo administrator može objaviti slike u galeriji.');
+      return;
+    }
+    const file = galleryImageInput && galleryImageInput.files && galleryImageInput.files[0];
+    const description = (galleryDescriptionInput ? galleryDescriptionInput.value : '').trim();
+    if (!file) {
+      alert('Odaberite sliku za galeriju.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const items = getGalleryItems();
+      items.unshift({
+        id: 'gallery_' + Date.now(),
+        image: String(reader.result || ''),
+        description,
+        author: currentUser() || 'admin',
+        ts: Date.now(),
+        likes: 0,
+        dislikes: 0,
+        comments: []
+      });
+      saveGalleryItems(items);
+      if (galleryForm) galleryForm.reset();
+      renderGallery();
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function setPanelLoading(panelId, loading) {
@@ -432,6 +600,10 @@ if (chatForm) {
       alert('Poruka nije mogla biti poslana.');
     }
   });
+}
+
+if (galleryFeedEl) {
+  renderGallery();
 }
 
 form.addEventListener('submit', async e => {
@@ -943,7 +1115,8 @@ const panels = {
   announcements: document.getElementById('viewAnnouncements'),
   termini: document.getElementById('viewTermini'),
   matches: document.getElementById('viewMatches'),
-  chat: document.getElementById('viewChat')
+  chat: document.getElementById('viewChat'),
+  gallery: document.getElementById('viewGallery')
 };
 
 function showView(viewName) {
@@ -996,6 +1169,17 @@ if (chatBtn) {
     menuList.classList.remove('show');
     menuBtn.setAttribute('aria-expanded', 'false');
     renderChat();
+  });
+}
+
+const galleryBtn = document.getElementById('galleryBtn');
+if (galleryBtn) {
+  galleryBtn.style.display = 'none';
+  galleryBtn.setAttribute('hidden', 'hidden');
+  galleryBtn.disabled = true;
+  galleryBtn.addEventListener('click', (event) => {
+    event.preventDefault();
+    return false;
   });
 }
 
@@ -1176,4 +1360,5 @@ if (!isLoggedIn()) {
 updateAuthUi();
 render();
 renderChat();
+renderGallery();
 
