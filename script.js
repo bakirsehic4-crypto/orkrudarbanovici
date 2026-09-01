@@ -13,6 +13,7 @@ const galleryDescriptionInput = document.getElementById('galleryDescription');
 const galleryFeedEl = document.getElementById('galleryFeed');
 const matchForm = document.getElementById('matchForm');
 const clubName = 'ORK Rudar Banovići';
+let chatRefreshTimer = null;
 const API_BASE = 'https://orkrudarbanovici-1.onrender.com/api';
 const ADMIN_USERNAME = 'admin';
 const ADMIN_PASSWORD = 'admin123';
@@ -355,6 +356,31 @@ function renderChatMessages(items) {
     chatMessagesEl.appendChild(li);
   });
   requestAnimationFrame(() => scrollChatToBottom());
+}
+
+function ensureChatAutoRefresh() {
+  if (!currentUser()) {
+    stopChatAutoRefresh();
+    return;
+  }
+
+  if (chatRefreshTimer) {
+    return;
+  }
+
+  chatRefreshTimer = setInterval(() => {
+    const activePanel = document.querySelector('.view-panel.active');
+    if (activePanel && activePanel.id === 'viewChat') {
+      renderChat();
+    }
+  }, 4000);
+}
+
+function stopChatAutoRefresh() {
+  if (chatRefreshTimer) {
+    clearInterval(chatRefreshTimer);
+    chatRefreshTimer = null;
+  }
 }
 
 async function renderChat() {
@@ -1169,6 +1195,7 @@ if (chatBtn) {
     menuList.classList.remove('show');
     menuBtn.setAttribute('aria-expanded', 'false');
     renderChat();
+    ensureChatAutoRefresh();
   });
 }
 
@@ -1187,6 +1214,7 @@ const logoutBtn = document.getElementById('logoutBtn');
 if (logoutBtn) {
   logoutBtn.addEventListener('click', () => {
     safeStorageRemove(SESSION_USER_KEY);
+    stopChatAutoRefresh();
     showView('announcements');
     showLogin(true);
   });
@@ -1285,6 +1313,7 @@ function logInUser(username) {
   showLogin(false);
   render();
   renderChat();
+  ensureChatAutoRefresh();
 }
 
 if (loginTabBtn) {
@@ -1355,10 +1384,14 @@ if (!isLoggedIn()) {
   setAuthMode('login');
   showLogin(false);
   fetchCurrentUserProfile();
+  ensureChatAutoRefresh();
 }
 
 updateAuthUi();
 render();
 renderChat();
 renderGallery();
+if (isLoggedIn()) {
+  ensureChatAutoRefresh();
+}
 
