@@ -10,17 +10,14 @@ from flask import Flask, jsonify, request
 try:
     import psycopg
     from psycopg.rows import dict_row
-    from psycopg.pool import SimpleConnectionPool
 except ImportError:
     psycopg = None
-    SimpleConnectionPool = None
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(ROOT, "database.db")
 
 app = Flask(__name__)
 ADMIN_USERNAME = "admin"
-_pool = None
 
 
 def get_database_url():
@@ -72,34 +69,12 @@ def index():
     return jsonify({"ok": True, "message": "API ready", "db": "postgres"})
 
 
-def init_pool():
-    global _pool
-    if not is_postgres() or _pool is not None:
-        return
-    try:
-        _pool = SimpleConnectionPool(1, 5, require_postgres(), sslmode="require")
-    except Exception:
-        pass
-
 def get_db_connection():
     if not is_postgres():
         raise RuntimeError("Postgres is required. Set DATABASE_URL and keep psycopg installed.")
-    global _pool
-    if _pool is None:
-        init_pool()
-    if _pool:
-        return _pool.getconn()
     conn = psycopg.connect(require_postgres(), sslmode="require")
     conn.autocommit = False
     return conn
-
-def return_db_connection(conn):
-    global _pool
-    if _pool and conn:
-        try:
-            _pool.putconn(conn)
-        except Exception:
-            pass
 
 
 def db_execute(conn, query, params=()):
@@ -192,7 +167,7 @@ def init_db():
 
         conn.commit()
     finally:
-        return_db_connection(conn)
+        conn.close()
 
 
 @app.route('/debug-db', methods=['GET'])
@@ -220,7 +195,7 @@ def get_announcements():
         data = [{"message": row["message"], "ts": row["ts"], "author": "Trener"} for row in rows]
         return jsonify(data)
     finally:
-        return_db_connection(conn)
+        conn.close()
 
 
 @app.route('/api/announcements', methods=['POST'])
@@ -248,7 +223,7 @@ def save_announcements():
             conn.commit()
         return jsonify({"ok": True})
     finally:
-        return_db_connection(conn)
+        conn.close()
 
 
 @app.route('/api/chat', methods=['GET'])
@@ -263,7 +238,7 @@ def get_chat_messages():
         """)
         return jsonify([{"username": row["username"], "message": row["message"], "image": row["image"], "ts": row["ts"], "avatar": row["avatar"]} for row in rows])
     finally:
-        return_db_connection(conn)
+        conn.close()
 
 
 @app.route('/api/chat', methods=['POST'])
@@ -285,7 +260,7 @@ def save_chat_message():
         conn.commit()
         return jsonify({"ok": True})
     finally:
-        return_db_connection(conn)
+        conn.close()
 
 
 def parse_int_or_none(val):
@@ -389,7 +364,7 @@ def handle_matches():
             })
         return jsonify(data)
     finally:
-        return_db_connection(conn)
+        conn.close()
 
 
 @app.route('/api/matches/<match_id>', methods=['DELETE'])
@@ -403,7 +378,7 @@ def delete_single_match(match_id):
         conn.commit()
         return jsonify({"ok": True, "message": "Match deleted successfully"})
     finally:
-        return_db_connection(conn)
+        conn.close()
 
 
 @app.route('/api/teams', methods=['GET', 'POST', 'DELETE'])
@@ -451,7 +426,7 @@ def handle_teams():
         data = {row["name"]: row["badge"] for row in rows}
         return jsonify(data)
     finally:
-        return_db_connection(conn)
+        conn.close()
 
 
 @app.route('/api/users/<username>', methods=['GET'])
@@ -467,7 +442,7 @@ def get_user(username):
             return jsonify({"ok": False, "error": "User not found"}), 404
         return jsonify({"ok": True, "username": row["username"], "avatar": row["avatar"]})
     finally:
-        return_db_connection(conn)
+        conn.close()
 
 
 @app.route('/api/users', methods=['POST'])
@@ -498,7 +473,7 @@ def create_user():
         conn.commit()
         return jsonify({"ok": True, "username": username, "avatar": avatar})
     finally:
-        return_db_connection(conn)
+        conn.close()
 
 
 @app.route('/api/users/login', methods=['POST'])
@@ -518,12 +493,11 @@ def login_user():
             return jsonify({"ok": False, "error": "Wrong username or password"}), 401
         return jsonify({"ok": True, "username": row["username"], "avatar": row["avatar"]})
     finally:
-        return_db_connection(conn)
+        conn.close()
 
 
 if __name__ == '__main__':
     if is_postgres():
-        init_pool()
         try:
             init_db()
         except Exception as e:
