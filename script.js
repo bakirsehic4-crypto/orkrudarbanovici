@@ -1096,6 +1096,8 @@ function logInUser(username) {
   safeStorageSet(SESSION_USER_KEY, username);
   updateAuthUi();
   showLogin(false);
+  render();
+  renderChat();
 }
 
 if (loginTabBtn) {
