@@ -22,7 +22,38 @@ const SESSION_USER_KEY = 'club_session_user';
 const PROFILE_IMAGE_KEY = 'club_profile_image';
 const GALLERY_KEY = 'club_gallery';
 const MAX_STORAGE_BYTES = 1_200_000;
+const MAX_PERSISTED_IMAGE_BYTES = 150_000;
+const STORAGE_VERSION_KEY = 'club_storage_version';
+const STORAGE_VERSION = '2';
 const memoryStorage = {};
+
+function purgeStaleBrowserData() {
+  try {
+    const version = safeStorageGet(STORAGE_VERSION_KEY);
+    if (version !== STORAGE_VERSION) {
+      for (const storage of getStorageCandidates()) {
+        try {
+          Object.keys(storage).forEach((key) => {
+            if (key && key.startsWith('club_') && key !== SESSION_USER_KEY && key !== STORAGE_VERSION_KEY) {
+              storage.removeItem(key);
+            }
+          });
+        } catch (err) {
+          // ignore storage access issues on mobile browsers
+        }
+      }
+      safeStorageSet(STORAGE_VERSION_KEY, STORAGE_VERSION);
+    }
+  } catch (err) {
+    // ignore version cleanup errors
+  }
+}
+
+function shouldPersistInBrowserStorage(key, value) {
+  const serializedValue = String(value);
+  const isImagePayload = key === PROFILE_IMAGE_KEY || key === GALLERY_KEY || /image|avatar/i.test(key);
+  return key === SESSION_USER_KEY || (!isImagePayload && serializedValue.length <= MAX_STORAGE_BYTES);
+}
 
 function getStorageCandidates() {
   const candidates = [];
@@ -44,6 +75,11 @@ function safeStorageGet(key) {
     try {
       const value = storage.getItem(key);
       if (value !== null) {
+        if (key !== SESSION_USER_KEY && value.length > MAX_STORAGE_BYTES) {
+          storage.removeItem(key);
+          delete memoryStorage[key];
+          continue;
+        }
         memoryStorage[key] = value;
         return value;
       }
@@ -56,10 +92,17 @@ function safeStorageGet(key) {
 
 function safeStorageSet(key, value) {
   const serializedValue = String(value);
-  const shouldSkipStorage = key !== SESSION_USER_KEY && serializedValue.length > MAX_STORAGE_BYTES;
+  const shouldSkipStorage = !shouldPersistInBrowserStorage(key, serializedValue);
 
   if (shouldSkipStorage) {
     memoryStorage[key] = serializedValue;
+    try {
+      if (key !== SESSION_USER_KEY) {
+        safeStorageRemove(key);
+      }
+    } catch (err) {
+      // ignore cleanup failures
+    }
     return false;
   }
 
@@ -180,13 +223,18 @@ function getProfileImage() {
 function setProfileImage(imageData) {
   if (!imageData) {
     safeStorageRemove(PROFILE_IMAGE_KEY);
+    delete memoryStorage[PROFILE_IMAGE_KEY];
     return;
   }
-  if (String(imageData).length > MAX_STORAGE_BYTES) {
-    memoryStorage[PROFILE_IMAGE_KEY] = String(imageData);
+
+  const dataValue = String(imageData);
+  if (dataValue.length > MAX_PERSISTED_IMAGE_BYTES || dataValue.startsWith('data:image/')) {
+    memoryStorage[PROFILE_IMAGE_KEY] = dataValue;
+    safeStorageRemove(PROFILE_IMAGE_KEY);
     return;
   }
-  safeStorageSet(PROFILE_IMAGE_KEY, imageData);
+
+  safeStorageSet(PROFILE_IMAGE_KEY, dataValue);
 }
 
 function updateAuthUi() {
@@ -663,7 +711,7 @@ function readLocal(key, fallback) {
 function writeLocal(key, value) {
   try {
     const serializedValue = JSON.stringify(value);
-    if (key !== SESSION_USER_KEY && serializedValue.length > MAX_STORAGE_BYTES) {
+    if (!shouldPersistInBrowserStorage(key, serializedValue)) {
       memoryStorage[key] = serializedValue;
       return;
     }
@@ -1266,6 +1314,7 @@ if (removeAvatarBtn) {
   });
 }
 
+purgeStaleBrowserData();
 showView('announcements');
 
 // --- login handling ---
