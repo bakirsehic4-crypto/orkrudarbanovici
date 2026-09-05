@@ -1,2 +1,4 @@
 Flask==3.0.3
-psycopg[binary]==3.2.10
+psycopg2-binary==2.9.9
+flask-cors
+gunicorn
