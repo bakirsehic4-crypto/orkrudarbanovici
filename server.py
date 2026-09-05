@@ -1,8 +1,8 @@
 import os
 import json
 import time
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
@@ -14,7 +14,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_db_connection():
     if not DATABASE_URL:
         raise ValueError("DATABASE_URL nije postavljen u environment varijablama!")
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
 def db_execute(conn, query, params=None):
     with conn.cursor() as cur:
