@@ -637,7 +637,7 @@ function buildMatchItem(it, teams) {
   if (!it.played) parts.push(it.location === 'home' ? 'Kući' : 'Gostujuća');
   if (it.competition) parts.push(it.competition);
   if (it.generation) parts.push(it.generation);
-  left.append(title, h('div', 'match-meta', parts.join(' • ')), h('div', 'match-open-hint', 'Detalji ›'));
+  left.append(title, h('div', 'match-meta', parts.join(' • ')));
 
   const actions = h('div', 'match-actions');
   if (isAdmin()) {
@@ -1034,7 +1034,46 @@ function intOrNull(v) {
   return Number.isNaN(n) ? null : n;
 }
 
-function buildDetailsEditor(m, teams) {
+function playerKey(p) {
+  return `${p.number || ''}||${p.name || ''}`;
+}
+
+function playerLabel(p) {
+  if (p.number && p.name) return `${p.number} · ${p.name}`;
+  return p.name || (p.number ? `#${p.number}` : '');
+}
+
+// Popunjava padajuću listu igrača iz spiska (samo igrači te ekipe)
+function fillPlayerSelect(sel, side, getRoster, selected) {
+  const roster = getRoster().filter(p => p.side === side);
+  const current = sel.selectedOptions && sel.selectedOptions[0];
+  const keep = current && current.value ? { number: current.dataset.number, name: current.dataset.name } : null;
+  const chosen = selected || keep;
+  const wanted = chosen ? playerKey(chosen) : '';
+
+  sel.innerHTML = '';
+  const first = h('option', '', roster.length ? '— izaberi igrača —' : 'Prvo dodaj igrače na spisak');
+  first.value = '';
+  sel.appendChild(first);
+
+  const seen = new Set();
+  const addOption = (p) => {
+    const key = playerKey(p);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const o = h('option', '', playerLabel(p));
+    o.value = key;
+    o.dataset.number = p.number || '';
+    o.dataset.name = p.name || '';
+    sel.appendChild(o);
+  };
+  roster.forEach(addOption);
+  // zadržava ranije upisanog igrača čak i ako više nije na spisku
+  if (chosen && (chosen.name || chosen.number)) addOption(chosen);
+  sel.value = [...sel.options].some(o => o.value === wanted) ? wanted : '';
+}
+
+function buildDetailsEditor(m, teams, allMatches) {
   const d = m.details || {};
   const info = matchTeamInfo(m, teams);
   const final = clubOppScore(m);
@@ -1042,37 +1081,112 @@ function buildDetailsEditor(m, teams) {
   const body = card.querySelector('.md-card-body');
   body.classList.add('md-editor');
 
-  const lab = (text) => body.appendChild(h('label', 'md-lab', text));
+  const section = (title, hint) => {
+    const box = h('div', 'md-section');
+    box.appendChild(h('label', 'md-lab', title));
+    if (hint) box.appendChild(h('div', 'md-hint', hint));
+    body.appendChild(box);
+    return box;
+  };
+  const sideOf = (row) => row.querySelector('.sel-side').value;
 
-  lab('Gol razlika na poluvremenu (golovi u 1. poluvremenu)');
+  // --- Poluvrijeme ---
+  const halfBox = section('Golovi u 1. poluvremenu');
   const halfRow = h('div', 'md-row');
-  const halfClub = inputEl('in-small', 'number', d.halfClub, info.club.name.slice(0, 10), { min: 0 });
-  const halfOpp = inputEl('in-small', 'number', d.halfOpp, info.opp.name.slice(0, 10), { min: 0 });
+  const halfClub = inputEl('in-small', 'number', d.halfClub, '', { min: 0 });
+  const halfOpp = inputEl('in-small', 'number', d.halfOpp, '', { min: 0 });
   halfRow.append(h('span', 'md-empty', info.club.name + ':'), halfClub, h('span', 'md-empty', info.opp.name + ':'), halfOpp);
-  body.appendChild(halfRow);
+  halfBox.appendChild(halfRow);
 
-  lab('Iskorišteni timeouti');
+  // --- Timeouti ---
+  const toBox = section('Iskorišteni timeouti');
   const toRow = h('div', 'md-row');
   const toClub = timeoutSelect(d.timeoutsClub);
   const toOpp = timeoutSelect(d.timeoutsOpp);
   toRow.append(h('span', 'md-empty', info.club.name + ':'), toClub, h('span', 'md-empty', info.opp.name + ':'), toOpp);
-  body.appendChild(toRow);
+  toBox.appendChild(toRow);
 
-  lab('Dvorana / mjesto (opcionalno)');
+  // --- Dvorana ---
+  const venueBox = section('Dvorana / mjesto (opcionalno)');
   const venue = inputEl('in-name', 'text', d.venue || '', 'npr. SKC Banovići, Banovići', { maxlength: 80 });
   venue.style.width = '100%';
-  body.appendChild(venue);
+  venueBox.appendChild(venue);
 
-  // Strijelci
-  lab('Strijelci');
+  // --- Spisak igrača ---
+  const rosterSection = section('Spisak igrača za ovu utakmicu', 'Upiši igrače jednom. Ispod ih samo biraš kao strijelce i isključenja.');
+  const rosterBox = document.createElement('div');
+  rosterSection.appendChild(rosterBox);
+
+  const getRoster = () => [...rosterBox.querySelectorAll('.md-row')]
+    .map(row => ({
+      side: sideOf(row),
+      number: row.querySelector('.in-number').value.trim(),
+      name: row.querySelector('.in-pname').value.trim()
+    }))
+    .filter(p => p.name || p.number);
+
   const scorerBox = document.createElement('div');
-  body.appendChild(scorerBox);
+  const suspBox = document.createElement('div');
   const sumNote = h('div', 'md-sum');
 
-  const updateSum = () => {
+  let updateSum = () => {};
+  const refreshPlayerSelects = () => {
+    [...scorerBox.querySelectorAll('.md-row'), ...suspBox.querySelectorAll('.md-row')].forEach(row => {
+      fillPlayerSelect(row.querySelector('.sel-player'), sideOf(row), getRoster);
+    });
+    updateSum();
+  };
+
+  const addRosterRow = (data = {}) => {
+    const row = h('div', 'md-row');
+    const sel = sideSelect(info, data.side);
+    sel.classList.add('sel-side');
+    const num = inputEl('in-num in-number', 'text', data.number, 'br.', { maxlength: 4 });
+    const name = inputEl('in-name in-pname', 'text', data.name, 'Ime i prezime', { maxlength: 60 });
+    const remove = h('button', 'btn secondary small', '×');
+    remove.type = 'button';
+    [sel, num, name].forEach(el => el.addEventListener('change', refreshPlayerSelects));
+    remove.addEventListener('click', () => { row.remove(); refreshPlayerSelects(); });
+    row.append(sel, num, name, remove);
+    rosterBox.appendChild(row);
+  };
+  (Array.isArray(d.roster) && d.roster.length ? d.roster : [{}]).forEach(addRosterRow);
+
+  const rosterBtns = h('div', 'md-btns');
+  const addPlayer = h('button', 'btn secondary small', '+ Dodaj igrača');
+  addPlayer.type = 'button';
+  addPlayer.addEventListener('click', () => addRosterRow());
+  const copyRoster = h('button', 'btn secondary small', 'Učitaj spisak sa prethodne utakmice');
+  copyRoster.type = 'button';
+  copyRoster.addEventListener('click', () => {
+    const others = (allMatches || [])
+      .filter(x => x.id !== m.id && x.details && Array.isArray(x.details.roster) && x.details.roster.some(p => p.side === 'club'))
+      .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
+    if (!others.length) return alert('Nijedna druga utakmica još nema spisak igrača.');
+    const have = new Set(getRoster().filter(p => p.side === 'club').map(playerKey));
+    let added = 0;
+    others[0].details.roster.filter(p => p.side === 'club').forEach(p => {
+      if (!have.has(playerKey(p))) { addRosterRow(p); added++; }
+    });
+    // prazan početni red više nije potreban
+    [...rosterBox.querySelectorAll('.md-row')].forEach(row => {
+      if (!row.querySelector('.in-number').value.trim() && !row.querySelector('.in-pname').value.trim()) row.remove();
+    });
+    refreshPlayerSelects();
+    if (!added) alert('Svi igrači sa prethodne utakmice su već na spisku.');
+  });
+  rosterBtns.append(addPlayer, copyRoster);
+  rosterSection.appendChild(rosterBtns);
+
+  // --- Strijelci ---
+  const scorerSection = section('Strijelci');
+  scorerSection.appendChild(scorerBox);
+
+  updateSum = () => {
     const sums = { club: 0, opp: 0 };
     scorerBox.querySelectorAll('.md-row').forEach(row => {
-      sums[row.querySelector('select').value] += parseInt(row.querySelector('.in-goals').value, 10) || 0;
+      if (!row.querySelector('.sel-player').value) return;
+      sums[sideOf(row)] += parseInt(row.querySelector('.in-goals').value, 10) || 0;
     });
     sumNote.textContent = `Zbir golova strijelaca: ${info.club.name} ${sums.club}/${final.club} · ${info.opp.name} ${sums.opp}/${final.opp}`;
     sumNote.classList.toggle('bad', sums.club !== final.club || sums.opp !== final.opp);
@@ -1080,21 +1194,20 @@ function buildDetailsEditor(m, teams) {
 
   const addScorerRow = (data = {}) => {
     const row = h('div', 'md-row');
+    const side = sideSelect(info, data.side);
+    side.classList.add('sel-side');
+    const player = document.createElement('select');
+    player.className = 'sel-player';
     const goals = inputEl('in-small in-goals', 'number', data.goals || 1, 'golovi', { min: 1, max: 99 });
-    goals.addEventListener('input', updateSum);
-    const sel = sideSelect(info, data.side);
-    sel.addEventListener('change', updateSum);
     const remove = h('button', 'btn secondary small', '×');
     remove.type = 'button';
+    side.addEventListener('change', () => { fillPlayerSelect(player, side.value, getRoster); updateSum(); });
+    goals.addEventListener('input', updateSum);
+    player.addEventListener('change', updateSum);
     remove.addEventListener('click', () => { row.remove(); updateSum(); });
-    row.append(
-      sel,
-      inputEl('in-num in-number', 'text', data.number, 'br.', { maxlength: 4 }),
-      inputEl('in-name in-pname', 'text', data.name, 'Ime i prezime', { maxlength: 60 }),
-      goals,
-      remove
-    );
+    row.append(side, player, goals, remove);
     scorerBox.appendChild(row);
+    fillPlayerSelect(player, side.value, getRoster, data.name || data.number ? data : null);
     updateSum();
   };
   (Array.isArray(d.scorers) && d.scorers.length ? d.scorers : [{}]).forEach(addScorerRow);
@@ -1102,15 +1215,20 @@ function buildDetailsEditor(m, teams) {
   const addScorer = h('button', 'btn secondary small', '+ Dodaj strijelca');
   addScorer.type = 'button';
   addScorer.addEventListener('click', () => addScorerRow());
-  body.append(addScorer, sumNote);
+  const scorerBtns = h('div', 'md-btns');
+  scorerBtns.appendChild(addScorer);
+  scorerSection.append(scorerBtns, sumNote);
 
-  // Isključenja
-  lab('Isključenja');
-  const suspBox = document.createElement('div');
-  body.appendChild(suspBox);
+  // --- Isključenja ---
+  const suspSection = section('Isključenja');
+  suspSection.appendChild(suspBox);
 
   const addSuspRow = (data = {}) => {
     const row = h('div', 'md-row');
+    const side = sideSelect(info, data.side);
+    side.classList.add('sel-side');
+    const player = document.createElement('select');
+    player.className = 'sel-player';
     const red = document.createElement('input');
     red.type = 'checkbox';
     red.className = 'in-red';
@@ -1119,26 +1237,29 @@ function buildDetailsEditor(m, teams) {
     redLabel.append(red, document.createTextNode('Crveni'));
     const remove = h('button', 'btn secondary small', '×');
     remove.type = 'button';
+    side.addEventListener('change', () => fillPlayerSelect(player, side.value, getRoster));
     remove.addEventListener('click', () => row.remove());
     row.append(
-      sideSelect(info, data.side),
-      inputEl('in-num in-number', 'text', data.number, 'br.', { maxlength: 4 }),
-      inputEl('in-name in-pname', 'text', data.name, 'Ime i prezime', { maxlength: 60 }),
+      side,
+      player,
       inputEl('in-small in-count', 'number', data.count != null ? data.count : 1, '2 min', { min: 0, max: 9 }),
       h('span', 'md-empty', '× 2 min'),
       redLabel,
       remove
     );
     suspBox.appendChild(row);
+    fillPlayerSelect(player, side.value, getRoster, data.name || data.number ? data : null);
   };
   (Array.isArray(d.suspensions) ? d.suspensions : []).forEach(addSuspRow);
 
   const addSusp = h('button', 'btn secondary small', '+ Dodaj isključenje');
   addSusp.type = 'button';
   addSusp.addEventListener('click', () => addSuspRow());
-  body.appendChild(addSusp);
+  const suspBtns = h('div', 'md-btns');
+  suspBtns.appendChild(addSusp);
+  suspSection.appendChild(suspBtns);
 
-  // Spremanje
+  // --- Spremanje ---
   const actions = h('div', 'md-actions');
   const save = h('button', 'btn', 'Spremi detalje');
   save.type = 'button';
@@ -1151,14 +1272,30 @@ function buildDetailsEditor(m, teams) {
     if ((hc == null) !== (ho == null)) return alert('Unesite golove u 1. poluvremenu za oba tima (ili ostavite oba prazna).');
     if (hc != null && (hc > final.club || ho > final.opp)) return alert('Golovi u 1. poluvremenu ne mogu biti veći od konačnog rezultata.');
 
-    const collect = (box, extra) => [...box.querySelectorAll('.md-row')]
-      .map(row => ({
-        side: row.querySelector('select').value,
-        number: row.querySelector('.in-number').value.trim(),
-        name: row.querySelector('.in-pname').value.trim(),
-        ...extra(row)
-      }))
-      .filter(x => x.name || x.number);
+    const playerOf = (row) => {
+      const opt = row.querySelector('.sel-player').selectedOptions[0];
+      return opt && opt.value ? { number: opt.dataset.number || '', name: opt.dataset.name || '' } : null;
+    };
+
+    const scorers = [];
+    scorerBox.querySelectorAll('.md-row').forEach(row => {
+      const player = playerOf(row);
+      const goals = parseInt(row.querySelector('.in-goals').value, 10) || 0;
+      if (player && goals > 0) scorers.push({ side: sideOf(row), ...player, goals });
+    });
+
+    const suspensions = [];
+    suspBox.querySelectorAll('.md-row').forEach(row => {
+      const player = playerOf(row);
+      if (player) {
+        suspensions.push({
+          side: sideOf(row),
+          ...player,
+          count: parseInt(row.querySelector('.in-count').value, 10) || 0,
+          red: row.querySelector('.in-red').checked
+        });
+      }
+    });
 
     const details = {
       venue: venue.value.trim(),
@@ -1166,11 +1303,9 @@ function buildDetailsEditor(m, teams) {
       halfOpp: ho,
       timeoutsClub: parseInt(toClub.value, 10) || 0,
       timeoutsOpp: parseInt(toOpp.value, 10) || 0,
-      scorers: collect(scorerBox, row => ({ goals: parseInt(row.querySelector('.in-goals').value, 10) || 0 })).filter(x => x.goals > 0),
-      suspensions: collect(suspBox, row => ({
-        count: parseInt(row.querySelector('.in-count').value, 10) || 0,
-        red: row.querySelector('.in-red').checked
-      }))
+      roster: getRoster(),
+      scorers,
+      suspensions
     };
 
     save.disabled = true;
@@ -1179,6 +1314,18 @@ function buildDetailsEditor(m, teams) {
     if (ok) renderMatchDetail();
   });
 
+  return card;
+}
+
+function buildRosterCard(m, d, info, sides) {
+  const roster = (Array.isArray(d.roster) ? d.roster : [])
+    .slice()
+    .sort((a, b) => (parseInt(a.number, 10) || 999) - (parseInt(b.number, 10) || 999));
+  if (!roster.length) return null;
+  const card = mdCard('SPISAK IGRAČA');
+  card.querySelector('.md-card-body').appendChild(
+    buildPlayerColumns(m, info, sides, roster, () => {}, 'Nema igrača na spisku.')
+  );
   return card;
 }
 
@@ -1218,7 +1365,9 @@ async function renderMatchDetail() {
     grid.appendChild(buildScorersCard(m, d, info, sides));
     body.appendChild(grid);
     body.appendChild(buildSuspensionsCard(m, d, info, sides));
-    if (isAdmin()) body.appendChild(buildDetailsEditor(m, teams));
+    const rosterCard = buildRosterCard(m, d, info, sides);
+    if (rosterCard) body.appendChild(rosterCard);
+    if (isAdmin()) body.appendChild(buildDetailsEditor(m, teams, items));
   } else {
     body.appendChild(h('div', 'md-note', 'Strijelci, timeouti i isključenja bit će dostupni nakon što se upiše rezultat utakmice.'));
   }

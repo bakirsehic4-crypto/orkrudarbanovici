@@ -18,7 +18,7 @@ log = logging.getLogger("server")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USERNAME = "admin"
-SERVER_VERSION = "2026-10-18-details"
+SERVER_VERSION = "2026-10-18-roster"
 
 
 # ---------------------------------------------------------------------------
@@ -289,8 +289,8 @@ def clean_details(raw):
     if not isinstance(raw, dict):
         return None
 
-    def as_list(value):
-        return value[:60] if isinstance(value, list) else []
+    def as_list(value, limit=60):
+        return value[:limit] if isinstance(value, list) else []
 
     out = {
         "venue": clean_text(raw.get("venue"), 80),
@@ -298,9 +298,20 @@ def clean_details(raw):
         "halfOpp": clean_int(raw.get("halfOpp")),
         "timeoutsClub": clean_int(raw.get("timeoutsClub"), 0, 3) or 0,
         "timeoutsOpp": clean_int(raw.get("timeoutsOpp"), 0, 3) or 0,
+        "roster": [],
         "scorers": [],
         "suspensions": [],
     }
+    for item in as_list(raw.get("roster"), 80):
+        if not isinstance(item, dict):
+            continue
+        name = clean_text(item.get("name"))
+        number = clean_text(item.get("number"), 4)
+        if name or number:
+            out["roster"].append({
+                "side": "opp" if item.get("side") == "opp" else "club",
+                "number": number, "name": name,
+            })
     for item in as_list(raw.get("scorers")):
         if not isinstance(item, dict):
             continue
