@@ -18,6 +18,7 @@ log = logging.getLogger("server")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USERNAME = "admin"
+SERVER_VERSION = "2026-10-18-repair"
 
 
 # ---------------------------------------------------------------------------
@@ -53,10 +54,57 @@ def db_fetchone(conn, query, params=None):
         return cur.fetchone()
 
 
+def table_columns(conn, table):
+    rows = db_fetchall(
+        conn,
+        """
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = %s
+        """,
+        (table,)
+    )
+    return {r["column_name"]: r["data_type"] for r in rows}
+
+
+def ensure_table(conn, name, create_sql, required):
+    """Creates the table. If an OLD version with a different layout already exists
+    (created by an earlier server.py), it is renamed to <name>_legacy (nothing is
+    deleted) and a fresh table is created. Returns (legacy_name, legacy_columns)."""
+    cols = table_columns(conn, name)
+    legacy = None
+    legacy_cols = {}
+    if cols:
+        missing = [c for c in required if c not in cols]
+        bad_id = "id" in required and cols.get("id") not in ("text", "character varying")
+        if missing or bad_id:
+            legacy = f"{name}_legacy"
+            if table_columns(conn, legacy):
+                legacy = f"{name}_legacy_{int(time.time())}"
+            legacy_cols = cols
+            db_execute(conn, f"ALTER TABLE {name} RENAME TO {legacy}")
+            conn.commit()
+            log.warning("Tabela %s je imala staru strukturu -> preimenovana u %s", name, legacy)
+    db_execute(conn, create_sql)
+    conn.commit()
+    return legacy, legacy_cols
+
+
+def try_copy(conn, sql, label):
+    """Best-effort copy of old data; a failure never stops the server."""
+    try:
+        db_execute(conn, sql)
+        conn.commit()
+        log.info("Preneseni stari podaci: %s", label)
+    except Exception as exc:  # noqa: BLE001
+        conn.rollback()
+        log.warning("Prenos starih podataka (%s) nije uspio: %s", label, exc)
+
+
 def init_db():
     conn = get_db_connection()
     try:
-        # Korisnici
+        # Korisnici (postojeci racuni se cuvaju; samo se dodaju nedostajuce kolone)
         db_execute(conn, """
             CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY,
@@ -65,28 +113,54 @@ def init_db():
                 profile_image TEXT
             )
         """)
-        # Obavještenja
-        db_execute(conn, """
+        db_execute(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'user'")
+        db_execute(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_image TEXT")
+        conn.commit()
+        user_cols = table_columns(conn, "users")
+        if "avatar" in user_cols:
+            try_copy(conn, "UPDATE users SET profile_image = avatar WHERE profile_image IS NULL AND avatar IS NOT NULL", "users.avatar")
+
+        # Obavijesti
+        legacy, lcols = ensure_table(conn, "announcements", """
             CREATE TABLE IF NOT EXISTS announcements (
                 id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                content TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL DEFAULT '',
                 author TEXT,
                 ts BIGINT NOT NULL
             )
-        """)
-        # Poruke (Chat)
-        db_execute(conn, """
+        """, ["id", "title", "content", "author", "ts"])
+        if legacy and "message" in lcols and "ts" in lcols:
+            try_copy(conn, f"""
+                INSERT INTO announcements (id, title, content, author, ts)
+                SELECT 'legacy_' || id::text, '', COALESCE(message, ''), 'Admin', ts
+                FROM {legacy} WHERE message IS NOT NULL
+                ON CONFLICT (id) DO NOTHING
+            """, "announcements")
+
+        # Chat
+        legacy, lcols = ensure_table(conn, "chat_messages", """
             CREATE TABLE IF NOT EXISTS chat_messages (
                 id TEXT PRIMARY KEY,
                 sender TEXT NOT NULL,
-                text TEXT NOT NULL,
+                text TEXT NOT NULL DEFAULT '',
+                image TEXT,
                 ts BIGINT NOT NULL
             )
-        """)
+        """, ["id", "sender", "text", "ts"])
         db_execute(conn, "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS image TEXT")
+        conn.commit()
+        if legacy and "username" in lcols and "message" in lcols and "ts" in lcols:
+            image_expr = "image" if "image" in lcols else "NULL"
+            try_copy(conn, f"""
+                INSERT INTO chat_messages (id, sender, text, image, ts)
+                SELECT 'legacy_' || id::text, username, COALESCE(message, ''), {image_expr}, ts
+                FROM {legacy}
+                ON CONFLICT (id) DO NOTHING
+            """, "chat")
+
         # Galerija
-        db_execute(conn, """
+        ensure_table(conn, "gallery", """
             CREATE TABLE IF NOT EXISTS gallery (
                 id TEXT PRIMARY KEY,
                 image TEXT NOT NULL,
@@ -97,10 +171,9 @@ def init_db():
                 dislikes INTEGER DEFAULT 0,
                 comments TEXT
             )
-        """)
-        # Utakmice (nove tabele, oblik odgovara matches.html)
-        # Imena club_* su namjerno nova da se ne sukobe sa starim
-        # 'matches' / 'teams' tabelama koje mogu vec postojati u bazi.
+        """, ["id", "image", "description", "author", "ts", "likes", "dislikes", "comments"])
+
+        # Utakmice (nove tabele; imena club_* ne smetaju starim 'matches' / 'teams')
         db_execute(conn, """
             CREATE TABLE IF NOT EXISTS club_matches (
                 id TEXT PRIMARY KEY,
@@ -114,7 +187,6 @@ def init_db():
                 away_score INTEGER
             )
         """)
-        # Timovi i grbovi
         db_execute(conn, """
             CREATE TABLE IF NOT EXISTS club_teams (
                 name TEXT PRIMARY KEY,
@@ -139,6 +211,7 @@ def ensure_db():
 
 
 # Pokusaj odmah pri pokretanju, ali bez rušenja servera ako ne uspije
+log.info("Server verzija: %s", SERVER_VERSION)
 try:
     ensure_db()
     log.info("Baza spremna.")
@@ -158,6 +231,15 @@ def before_request():
         log.error("Baza nedostupna: %s", exc)
         return jsonify({"ok": False, "error": "Baza podataka trenutno nije dostupna."}), 503
     return None
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(exc):
+    from werkzeug.exceptions import HTTPException
+    if isinstance(exc, HTTPException):
+        return jsonify({"ok": False, "error": exc.description}), exc.code
+    log.exception("Neocekivana greska u %s %s", request.method, request.path)
+    return jsonify({"ok": False, "error": f"Greška na serveru ({type(exc).__name__})."}), 500
 
 
 # ---------------------------------------------------------------------------
@@ -244,12 +326,13 @@ def health():
         conn = get_db_connection()
         try:
             db_fetchone(conn, "SELECT 1 AS ok")
+            chat_columns = sorted(table_columns(conn, "chat_messages").keys())
         finally:
             conn.close()
-        return jsonify({"ok": True, "db": "up"})
+        return jsonify({"ok": True, "db": "up", "version": SERVER_VERSION, "chat_columns": chat_columns})
     except Exception as exc:  # noqa: BLE001
         log.error("Health check: baza nedostupna: %s", exc)
-        return jsonify({"ok": False, "db": "down", "error": type(exc).__name__}), 503
+        return jsonify({"ok": False, "db": "down", "version": SERVER_VERSION, "error": type(exc).__name__}), 503
 
 
 # ---------------------------------------------------------------------------
