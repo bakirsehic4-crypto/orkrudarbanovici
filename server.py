@@ -18,7 +18,7 @@ log = logging.getLogger("server")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USERNAME = "admin"
-SERVER_VERSION = "2026-10-18-repair"
+SERVER_VERSION = "2026-10-18-details"
 
 
 # ---------------------------------------------------------------------------
@@ -184,9 +184,12 @@ def init_db():
                 generation TEXT,
                 played BOOLEAN NOT NULL DEFAULT FALSE,
                 home_score INTEGER,
-                away_score INTEGER
+                away_score INTEGER,
+                details TEXT
             )
         """)
+        # Postojece utakmice ostaju netaknute; samo se dodaje nova kolona
+        db_execute(conn, "ALTER TABLE club_matches ADD COLUMN IF NOT EXISTS details TEXT")
         db_execute(conn, """
             CREATE TABLE IF NOT EXISTS club_teams (
                 name TEXT PRIMARY KEY,
@@ -270,6 +273,60 @@ def to_int_or_none(value):
         return None
 
 
+def clean_text(value, limit=60):
+    return str(value or "").strip()[:limit]
+
+
+def clean_int(value, low=0, high=999):
+    number = to_int_or_none(value)
+    if number is None:
+        return None
+    return max(low, min(high, number))
+
+
+def clean_details(raw):
+    """Whitelists and limits the match-details object (scorers, timeouts, suspensions)."""
+    if not isinstance(raw, dict):
+        return None
+
+    def as_list(value):
+        return value[:60] if isinstance(value, list) else []
+
+    out = {
+        "venue": clean_text(raw.get("venue"), 80),
+        "halfClub": clean_int(raw.get("halfClub")),
+        "halfOpp": clean_int(raw.get("halfOpp")),
+        "timeoutsClub": clean_int(raw.get("timeoutsClub"), 0, 3) or 0,
+        "timeoutsOpp": clean_int(raw.get("timeoutsOpp"), 0, 3) or 0,
+        "scorers": [],
+        "suspensions": [],
+    }
+    for item in as_list(raw.get("scorers")):
+        if not isinstance(item, dict):
+            continue
+        name = clean_text(item.get("name"))
+        number = clean_text(item.get("number"), 4)
+        goals = clean_int(item.get("goals"), 0, 99) or 0
+        if (name or number) and goals > 0:
+            out["scorers"].append({
+                "side": "opp" if item.get("side") == "opp" else "club",
+                "number": number, "name": name, "goals": goals,
+            })
+    for item in as_list(raw.get("suspensions")):
+        if not isinstance(item, dict):
+            continue
+        name = clean_text(item.get("name"))
+        number = clean_text(item.get("number"), 4)
+        if name or number:
+            out["suspensions"].append({
+                "side": "opp" if item.get("side") == "opp" else "club",
+                "number": number, "name": name,
+                "count": clean_int(item.get("count"), 0, 9) or 0,
+                "red": bool(item.get("red")),
+            })
+    return out
+
+
 def normalize_match(item):
     """Turns a match dict from the frontend into a DB row tuple (or None if invalid)."""
     if not isinstance(item, dict):
@@ -282,6 +339,8 @@ def normalize_match(item):
     location = "away" if item.get("location") == "away" else "home"
     competition = str(item.get("competition") or "").strip() or None
     generation = str(item.get("generation") or "").strip() or None
+    details = clean_details(item.get("details")) if "details" in item else None
+    details_json = json.dumps(details, ensure_ascii=False) if details is not None else None
     return (
         match_id,
         opponent,
@@ -292,13 +351,14 @@ def normalize_match(item):
         bool(item.get("played")),
         to_int_or_none(item.get("homeScore")),
         to_int_or_none(item.get("awayScore")),
+        details_json,
     )
 
 
 UPSERT_MATCH_SQL = """
     INSERT INTO club_matches
-        (id, opponent, datetime, location, competition, generation, played, home_score, away_score)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        (id, opponent, datetime, location, competition, generation, played, home_score, away_score, details)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT (id) DO UPDATE SET
         opponent = EXCLUDED.opponent,
         datetime = EXCLUDED.datetime,
@@ -307,7 +367,8 @@ UPSERT_MATCH_SQL = """
         generation = EXCLUDED.generation,
         played = EXCLUDED.played,
         home_score = EXCLUDED.home_score,
-        away_score = EXCLUDED.away_score
+        away_score = EXCLUDED.away_score,
+        details = COALESCE(EXCLUDED.details, club_matches.details)
 """
 
 
@@ -592,11 +653,18 @@ def get_matches():
             conn,
             """
             SELECT id, opponent, datetime, location, competition, generation,
-                   played, home_score, away_score
+                   played, home_score, away_score, details
             FROM club_matches
             ORDER BY datetime ASC
             """
         )
+
+        def parse_details(raw):
+            try:
+                return json.loads(raw) if raw else {}
+            except (TypeError, ValueError):
+                return {}
+
         return jsonify([
             {
                 "id": r["id"],
@@ -608,6 +676,7 @@ def get_matches():
                 "played": bool(r["played"]),
                 "homeScore": r["home_score"],
                 "awayScore": r["away_score"],
+                "details": parse_details(r["details"]),
             }
             for r in rows
         ])
