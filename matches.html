@@ -160,7 +160,7 @@
         ...options,
         headers: {
           'Content-Type': 'application/json',
-          'X-Club-User': currentUser(),
+          'X-Club-User': encodeURIComponent(currentUser()),
           ...(options.headers || {})
         }
       });

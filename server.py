@@ -2,9 +2,12 @@ import os
 import json
 import time
 import logging
+import base64
+import binascii
+from urllib.parse import unquote
 import psycopg
 from psycopg.rows import dict_row
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -81,6 +84,7 @@ def init_db():
                 ts BIGINT NOT NULL
             )
         """)
+        db_execute(conn, "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS image TEXT")
         # Galerija
         db_execute(conn, """
             CREATE TABLE IF NOT EXISTS gallery (
@@ -161,7 +165,11 @@ def before_request():
 # ---------------------------------------------------------------------------
 
 def is_admin_request():
-    return request.headers.get("X-Club-User", "").strip().lower() == ADMIN_USERNAME
+    return unquote(request.headers.get("X-Club-User", "")).strip().lower() == ADMIN_USERNAME
+
+
+def request_user():
+    return unquote(request.headers.get("X-Club-User", "")).strip()
 
 
 def admin_required():
@@ -307,6 +315,10 @@ def register():
 
 @app.route('/api/announcements', methods=['GET', 'POST'])
 def handle_announcements():
+    if request.method == 'POST':
+        denied = admin_required()
+        if denied:
+            return denied
     conn = get_db_connection()
     try:
         if request.method == 'POST':
@@ -337,6 +349,20 @@ def handle_announcements():
         conn.close()
 
 
+@app.route('/api/announcements/<item_id>', methods=['DELETE'])
+def delete_announcement(item_id):
+    denied = admin_required()
+    if denied:
+        return denied
+    conn = get_db_connection()
+    try:
+        db_execute(conn, "DELETE FROM announcements WHERE id = %s", (item_id,))
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Gallery
 # ---------------------------------------------------------------------------
@@ -355,6 +381,10 @@ def handle_gallery():
             likes = int(payload.get("likes") or 0)
             dislikes = int(payload.get("dislikes") or 0)
             comments = json.dumps(payload.get("comments") or [])
+
+            exists = db_fetchone(conn, "SELECT id FROM gallery WHERE id = %s", (item_id,))
+            if not exists and not is_admin_request():
+                return jsonify({"ok": False, "error": "Admin access required"}), 403
 
             db_execute(
                 conn,
@@ -401,24 +431,70 @@ def handle_chat():
             payload = request.get_json(silent=True) or {}
             msg_id = str(payload.get("id") or f"msg_{int(time.time()*1000)}")
             sender = str(payload.get("sender") or "Anonimno")
-            text = str(payload.get("text") or "")
+            text = str(payload.get("text") or "").strip()
+            image = str(payload.get("image") or "")
             ts = int(payload.get("ts") or time.time()*1000)
 
-            if not text.strip():
+            if image and not image.startswith("data:image/"):
+                image = ""
+            if not text and not image:
                 return jsonify({"ok": False, "error": "Poruka ne može biti prazna."}), 400
 
             db_execute(
                 conn,
-                "INSERT INTO chat_messages (id, sender, text, ts) VALUES (%s, %s, %s, %s)",
-                (msg_id, sender, text, ts)
+                "INSERT INTO chat_messages (id, sender, text, image, ts) VALUES (%s, %s, %s, %s, %s)",
+                (msg_id, sender, text, image or None, ts)
             )
             conn.commit()
             return jsonify({"ok": True})
 
-        rows = db_fetchall(conn, "SELECT id, sender, text, ts FROM chat_messages ORDER BY ts ASC LIMIT 100")
-        return jsonify([dict(r) for r in rows])
+        # zadnjih 100 poruka, od starijih prema novijim (slike se ne šalju ovdje)
+        rows = db_fetchall(
+            conn,
+            """
+            SELECT id, sender, text, ts, (image IS NOT NULL AND image <> '') AS has_image
+            FROM (
+                SELECT id, sender, text, image, ts
+                FROM chat_messages
+                ORDER BY ts DESC
+                LIMIT 100
+            ) latest
+            ORDER BY ts ASC
+            """
+        )
+        return jsonify([
+            {
+                "id": r["id"],
+                "sender": r["sender"],
+                "text": r["text"],
+                "ts": r["ts"],
+                "hasImage": bool(r["has_image"]),
+            }
+            for r in rows
+        ])
     finally:
         conn.close()
+
+
+@app.route('/api/chat/<msg_id>/image', methods=['GET'])
+def chat_image(msg_id):
+    """Serves a chat image as a real image file so the browser can cache it."""
+    conn = get_db_connection()
+    try:
+        row = db_fetchone(conn, "SELECT image FROM chat_messages WHERE id = %s", (msg_id,))
+    finally:
+        conn.close()
+    if not row or not row["image"]:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    try:
+        header, b64 = row["image"].split(",", 1)
+        mimetype = header[5:].split(";")[0] or "image/jpeg"
+        data = base64.b64decode(b64)
+    except (ValueError, binascii.Error):
+        return jsonify({"ok": False, "error": "Bad image"}), 500
+    resp = Response(data, mimetype=mimetype)
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +614,52 @@ def save_teams():
             saved += 1
         conn.commit()
         return jsonify({"ok": True, "saved": saved})
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Users (avatars)
+# ---------------------------------------------------------------------------
+
+@app.route('/api/users/<username>', methods=['GET'])
+def get_user(username):
+    conn = get_db_connection()
+    try:
+        row = db_fetchone(
+            conn,
+            "SELECT username, profile_image FROM users WHERE LOWER(username) = LOWER(%s)",
+            (username,)
+        )
+        if not row:
+            return jsonify({"ok": False, "error": "User not found"}), 404
+        return jsonify({"ok": True, "username": row["username"], "avatar": row["profile_image"] or ""})
+    finally:
+        conn.close()
+
+
+@app.route('/api/users/<username>/avatar', methods=['PUT'])
+def update_avatar(username):
+    # Svako smije mijenjati samo svoju sliku
+    if request_user().lower() != username.strip().lower():
+        return jsonify({"ok": False, "error": "Not allowed"}), 403
+    data = request.get_json(silent=True) or {}
+    avatar = str(data.get("avatar") or "").strip()
+    if avatar and not avatar.startswith("data:image/"):
+        return jsonify({"ok": False, "error": "Invalid image"}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET profile_image = %s WHERE LOWER(username) = LOWER(%s)",
+                (avatar or None, username)
+            )
+            updated = cur.rowcount
+        conn.commit()
+        if updated == 0:
+            return jsonify({"ok": False, "error": "User not found"}), 404
+        return jsonify({"ok": True})
     finally:
         conn.close()
 
