@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -18,6 +18,7 @@
     .small{padding:6px 8px;font-size:13px}
     .result-inputs{display:flex;gap:8px;align-items:center}
     .result-inputs input{width:72px}
+    .status-msg{display:none;margin-bottom:10px;padding:8px 10px;border-radius:8px;background:#fef3f2;color:#b42318;font-size:13px}
   </style>
 </head>
 <body>
@@ -29,7 +30,7 @@
       <div class="brand-title">Matches</div>
     </div>
     <div class="header-right">
-      <button id="rudarBtn" class="btn secondary">Set Rudar badge</button>
+      <button id="rudarBtn" class="btn secondary" style="display:none">Set Rudar badge</button>
       <input id="rudarUpload" type="file" accept="image/*" style="display:none" />
       <a href="index.html" class="btn secondary">Back</a>
     </div>
@@ -37,6 +38,8 @@
 
   <main class="matches-wrap">
     <div class="matches-card">
+      <div id="statusMsg" class="status-msg"></div>
+
       <div class="tabs">
         <button id="tabUpcoming" class="tab-btn active">Upcoming Matches</button>
         <button id="tabResultsBtn" class="tab-btn">Results</button>
@@ -87,6 +90,13 @@
   </main>
 
   <script>
+    // Same backend address as script.js. If you ever serve the HTML pages from the
+    // SAME Render service as the Flask API, you can change this to '/api'.
+    const API_BASE = 'https://orkrudarbanovici-1.onrender.com/api';
+
+    const SESSION_USER_KEY = 'club_session_user';
+    const clubName = 'ORK Rudar Banovići';
+
     const matchForm = document.getElementById('matchForm');
     const dateEl = document.getElementById('datetime');
     const locationEl = document.getElementById('location');
@@ -94,16 +104,23 @@
     const upcomingList = document.getElementById('upcomingList');
     const resultsList = document.getElementById('resultsList');
     const clearMatches = document.getElementById('clearMatches');
-    const clubName = 'ORK Rudar Banovići';
-    const API_BASE = '/api';
-    const SESSION_USER_KEY = 'club_session_user';
+    const statusMsg = document.getElementById('statusMsg');
+    const rudarBtn = document.getElementById('rudarBtn');
+    const rudarUpload = document.getElementById('rudarUpload');
 
+    // ---------- helpers ----------
+
+    // script.js stores the login in sessionStorage, so read that first.
     function currentUser() {
-      return localStorage.getItem(SESSION_USER_KEY) || '';
+      try {
+        return (sessionStorage.getItem(SESSION_USER_KEY) || localStorage.getItem(SESSION_USER_KEY) || '').trim();
+      } catch (e) {
+        return '';
+      }
     }
 
     function isAdminUser() {
-      return currentUser().trim() === 'admin';
+      return currentUser().toLowerCase() === 'admin';
     }
 
     function readLocal(key, fallback) {
@@ -116,71 +133,125 @@
     }
 
     function writeLocal(key, value) {
-      localStorage.setItem(key, JSON.stringify(value));
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* ignore */ }
+    }
+
+    function esc(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function showStatus(message) {
+      if (!message) {
+        statusMsg.style.display = 'none';
+        statusMsg.textContent = '';
+        return;
+      }
+      statusMsg.textContent = message;
+      statusMsg.style.display = 'block';
     }
 
     async function fetchJson(url, options = {}) {
       const response = await fetch(url, {
-        headers: { 'Content-Type': 'application/json', 'X-Club-User': currentUser() },
-        ...options
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Club-User': currentUser(),
+          ...(options.headers || {})
+        }
       });
       if (!response.ok) {
-        throw new Error('Request failed: ' + response.status);
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || ('Request failed: ' + response.status));
       }
       return response.json();
     }
 
+    function defaultClubBadge() {
+      const svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='#0a3923'/><circle cx='50' cy='50' r='40' fill='#1fb44a'/><text x='50' y='60' font-size='40' text-anchor='middle' fill='#fff' font-family='Arial'>R</text></svg>";
+      return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+    }
+
+    // ---------- server calls ----------
+
     async function loadMatches() {
       try {
         const data = await fetchJson(API_BASE + '/matches');
-        return Array.isArray(data) ? data : [];
+        const list = Array.isArray(data) ? data : [];
+        writeLocal('matches', list); // read-only cache for when the server is unreachable
+        showStatus('');
+        return list;
       } catch (err) {
+        showStatus('Could not reach the server — showing the last saved data. (' + err.message + ')');
         return readLocal('matches', []);
-      }
-    }
-
-    async function saveMatches(arr) {
-      if (!isAdminUser()) return false;
-      try {
-        await fetchJson(API_BASE + '/matches', {
-          method: 'POST',
-          body: JSON.stringify(arr)
-        });
-        writeLocal('matches', arr);
-        return true;
-      } catch (err) {
-        return false;
       }
     }
 
     async function loadTeams() {
       try {
         const data = await fetchJson(API_BASE + '/teams');
-        return data && typeof data === 'object' ? data : {};
+        const teams = data && typeof data === 'object' ? data : {};
+        writeLocal('teams', teams);
+        return teams;
       } catch (err) {
         return readLocal('teams', {});
       }
     }
 
-    async function saveTeams(obj) {
-      writeLocal('teams', obj);
+    // Saves ONE match (insert or update). Never overwrites the whole list.
+    async function upsertMatch(match) {
+      if (!isAdminUser()) return false;
       try {
-        await fetchJson(API_BASE + '/teams', {
-          method: 'POST',
-          body: JSON.stringify(obj)
-        });
+        await fetchJson(API_BASE + '/matches', { method: 'POST', body: JSON.stringify(match) });
+        return true;
       } catch (err) {
-        // fallback while server is not available
+        alert('Could not save the match: ' + err.message);
+        return false;
       }
     }
 
-    function getTeamBadge(name, teams) {
-      return teams[name] || null;
+    async function deleteMatchById(id) {
+      if (!isAdminUser()) return false;
+      try {
+        await fetchJson(API_BASE + '/matches/' + encodeURIComponent(id), { method: 'DELETE' });
+        return true;
+      } catch (err) {
+        alert('Could not delete the match: ' + err.message);
+        return false;
+      }
+    }
+
+    // Saves ONE team badge.
+    async function saveTeam(name, badge) {
+      if (!isAdminUser()) return false;
+      try {
+        await fetchJson(API_BASE + '/teams', { method: 'POST', body: JSON.stringify({ [name]: badge }) });
+        return true;
+      } catch (err) {
+        alert('Could not save the team badge: ' + err.message);
+        return false;
+      }
+    }
+
+    // ---------- rendering ----------
+
+    function badgeTag(data) {
+      return data ? `<img src="${esc(data)}" class="team-badge" alt="badge"/>` : '';
     }
 
     async function render() {
-      matchForm.style.display = isAdminUser() ? '' : 'none';
-      const [items, teamMap] = await Promise.all([loadMatches(), loadTeams()]);
+      const admin = isAdminUser();
+      matchForm.style.display = admin ? '' : 'none';
+      rudarBtn.style.display = admin ? '' : 'none';
+
+      const [items, loadedTeams] = await Promise.all([loadMatches(), loadTeams()]);
+      const teamMap = { ...loadedTeams };
+      if (!teamMap[clubName]) teamMap[clubName] = defaultClubBadge();
+
       upcomingList.innerHTML = '';
       resultsList.innerHTML = '';
       items.sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
@@ -191,17 +262,15 @@
         const left = document.createElement('div');
         const homeName = it.location === 'home' ? clubName : it.opponent;
         const awayName = it.location === 'home' ? it.opponent : clubName;
-        const homeBadge = getTeamBadge(homeName, teamMap);
-        const awayBadge = getTeamBadge(awayName, teamMap);
-
-        function badgeTag(data) {
-          return data ? `<img src="${data}" class="team-badge" alt="badge"/>` : '';
-        }
+        const homeBadge = teamMap[homeName] || null;
+        const awayBadge = teamMap[awayName] || null;
+        const when = new Date(it.datetime).toLocaleString();
+        const extra = (it.competition ? ' • ' + esc(it.competition) : '') + (it.generation ? ' • ' + esc(it.generation) : '');
 
         if (it.played) {
-          left.innerHTML = `<div><strong>${badgeTag(homeBadge)} ${homeName} ${it.homeScore} - ${it.awayScore} ${awayName} ${badgeTag(awayBadge)}</strong></div><div class="match-meta">${new Date(it.datetime).toLocaleString()} ${it.competition ? ' • ' + it.competition : ''}${it.generation ? ' • ' + it.generation : ''}</div>`;
+          left.innerHTML = `<div><strong>${badgeTag(homeBadge)} ${esc(homeName)} ${esc(it.homeScore)} - ${esc(it.awayScore)} ${esc(awayName)} ${badgeTag(awayBadge)}</strong></div><div class="match-meta">${esc(when)}${extra}</div>`;
         } else {
-          left.innerHTML = `<div><strong>${badgeTag(homeBadge)} ${homeName} vs ${awayName} ${badgeTag(awayBadge)}</strong> <div class="match-meta">${new Date(it.datetime).toLocaleString()}</div></div><div class="match-meta">${it.location === 'home' ? 'Home' : 'Away'}${it.competition ? ' • ' + it.competition : ''}${it.generation ? ' • ' + it.generation : ''}</div>`;
+          left.innerHTML = `<div><strong>${badgeTag(homeBadge)} ${esc(homeName)} vs ${esc(awayName)} ${badgeTag(awayBadge)}</strong> <div class="match-meta">${esc(when)}</div></div><div class="match-meta">${it.location === 'home' ? 'Home' : 'Away'}${extra}</div>`;
         }
 
         const actions = document.createElement('div');
@@ -209,62 +278,44 @@
 
         if (it.played) {
           const score = document.createElement('div');
-          score.innerHTML = `<strong>${it.homeScore} - ${it.awayScore}</strong>`;
+          score.innerHTML = `<strong>${esc(it.homeScore)} - ${esc(it.awayScore)}</strong>`;
           actions.appendChild(score);
-
-          const del = document.createElement('button');
-          del.className = 'small';
-          del.textContent = 'Delete';
-          del.addEventListener('click', async () => {
-            if (!isAdminUser()) return;
-            if (confirm('Delete this match?')) {
-              const arr = await loadMatches();
-              const next = arr.filter(m => m.id !== it.id);
-              await saveMatches(next);
-              render();
-            }
-          });
-          actions.appendChild(del);
-          el.appendChild(left);
-          el.appendChild(actions);
-          resultsList.appendChild(el);
-        } else {
+        } else if (admin) {
           const playBtn = document.createElement('button');
           playBtn.className = 'small';
           playBtn.textContent = 'Enter Result';
-          playBtn.addEventListener('click', () => showResultInputs(it.id, el, it));
+          playBtn.addEventListener('click', () => showResultInputs(el, it));
+          actions.appendChild(playBtn);
+        }
 
+        if (admin) {
           const del = document.createElement('button');
           del.className = 'small';
           del.textContent = 'Delete';
           del.addEventListener('click', async () => {
-            if (!isAdminUser()) return;
-            if (confirm('Delete this match?')) {
-              const arr = await loadMatches();
-              const next = arr.filter(m => m.id !== it.id);
-              await saveMatches(next);
-              render();
-            }
+            if (!confirm('Delete this match?')) return;
+            if (await deleteMatchById(it.id)) render();
           });
-
-          actions.appendChild(playBtn);
           actions.appendChild(del);
-          el.appendChild(left);
-          el.appendChild(actions);
-          upcomingList.appendChild(el);
         }
+
+        el.appendChild(left);
+        el.appendChild(actions);
+        (it.played ? resultsList : upcomingList).appendChild(el);
       });
 
       if (upcomingList.children.length === 0) upcomingList.innerHTML = '<div class="match-meta">No upcoming matches.</div>';
       if (resultsList.children.length === 0) resultsList.innerHTML = '<div class="match-meta">No results yet.</div>';
     }
 
-    function showResultInputs(id, container, match) {
-      container.querySelector('.match-actions').innerHTML = '';
+    function showResultInputs(container, match) {
+      const actions = container.querySelector('.match-actions');
+      actions.innerHTML = '';
       const inputs = document.createElement('div');
       inputs.className = 'result-inputs';
       const homeName = match.location === 'home' ? clubName : match.opponent;
       const awayName = match.location === 'home' ? match.opponent : clubName;
+
       const homeInput = document.createElement('input');
       homeInput.type = 'number';
       homeInput.min = 0;
@@ -279,72 +330,56 @@
       const cancel = document.createElement('button');
       cancel.className = 'small';
       cancel.textContent = 'Cancel';
+
       inputs.appendChild(homeInput);
       inputs.appendChild(document.createTextNode('-'));
       inputs.appendChild(awayInput);
       inputs.appendChild(save);
       inputs.appendChild(cancel);
-      container.querySelector('.match-actions').appendChild(inputs);
+      actions.appendChild(inputs);
 
       save.addEventListener('click', async () => {
-        if (!isAdminUser()) return;
         const homeScore = parseInt(homeInput.value, 10);
         const awayScore = parseInt(awayInput.value, 10);
         if (Number.isNaN(homeScore) || Number.isNaN(awayScore)) return alert('Enter both scores');
-
-        const arr = await loadMatches();
-        const updated = arr.map(m => {
-          if (m.id === id) {
-            return { ...m, played: true, homeScore, awayScore };
-          }
-          return m;
-        });
-        await saveMatches(updated);
-        render();
+        if (await upsertMatch({ ...match, played: true, homeScore, awayScore })) render();
       });
 
       cancel.addEventListener('click', render);
     }
 
-    async function ensureClubBadge() {
-      const teams = await loadTeams();
-      if (teams[clubName]) return;
-      const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230a3923'/><circle cx='50' cy='50' r='40' fill='%231fb44a'/><text x='50' y='60' font-size='40' text-anchor='middle' fill='%23fff' font-family='Arial'>R</text></svg>`;
-      teams[clubName] = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
-      writeLocal('teams', teams);
-      await saveTeams(teams);
-      populateOpponentSelect();
-      render();
-    }
+    // ---------- opponent dropdown ----------
 
-    function populateOpponentSelect() {
+    async function populateOpponentSelect() {
       const sel = document.getElementById('opponentSelect');
-      const teams = readLocal('teams', {});
+      const teams = await loadTeams();
       sel.innerHTML = '';
+
       const optChoose = document.createElement('option');
       optChoose.value = '';
       optChoose.textContent = 'Select existing team...';
       sel.appendChild(optChoose);
-      Object.keys(teams).forEach(name => {
+
+      Object.keys(teams).filter(name => name !== clubName).forEach(name => {
         const o = document.createElement('option');
         o.value = name;
         o.textContent = name;
         sel.appendChild(o);
       });
+
       const oNew = document.createElement('option');
       oNew.value = '__new';
       oNew.textContent = 'Add new team...';
       sel.appendChild(oNew);
     }
 
-    const opponentSelect = document.getElementById('opponentSelect');
-    opponentSelect.addEventListener('change', () => {
-      const v = opponentSelect.value;
+    document.getElementById('opponentSelect').addEventListener('change', () => {
+      const v = document.getElementById('opponentSelect').value;
       document.getElementById('newTeam').style.display = v === '__new' ? 'block' : 'none';
     });
 
-    const rudarBtn = document.getElementById('rudarBtn');
-    const rudarUpload = document.getElementById('rudarUpload');
+    // ---------- Rudar badge (admin) ----------
+
     if (rudarBtn && rudarUpload) {
       rudarBtn.addEventListener('click', () => rudarUpload.click());
       rudarUpload.addEventListener('change', () => {
@@ -352,14 +387,22 @@
         if (!file) return;
         const fr = new FileReader();
         fr.onload = async () => {
-          const teams = readLocal('teams', {});
-          teams[clubName] = fr.result;
-          writeLocal('teams', teams);
-          await saveTeams(teams);
-          populateOpponentSelect();
-          render();
-          alert('Rudar badge saved.');
+          if (await saveTeam(clubName, fr.result)) {
+            alert('Rudar badge saved.');
+            render();
+          }
         };
+        fr.readAsDataURL(file);
+      });
+    }
+
+    // ---------- add match ----------
+
+    function readFileAsDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(fr.result);
+        fr.onerror = () => reject(fr.error);
         fr.readAsDataURL(file);
       });
     }
@@ -367,53 +410,52 @@
     matchForm.addEventListener('submit', async e => {
       e.preventDefault();
       if (!isAdminUser()) return;
+
       const sel = document.getElementById('opponentSelect');
       let opponent = sel.value;
       const datetime = dateEl.value;
       const location = locationEl.value;
       const competition = compEl.value.trim();
-      const generation = document.getElementById('generation') ? document.getElementById('generation').value : '';
+      const generation = document.getElementById('generation').value;
       if (!datetime) return alert('Date/time required');
 
       if (opponent === '__new' || opponent === '') {
         const newName = document.getElementById('newOpponent').value.trim();
         if (!newName) return alert('Enter new team name');
         const badgeFile = document.getElementById('newBadge').files[0];
-        const teams = readLocal('teams', {});
-        const finishAdd = async badgeData => {
-          if (badgeData) teams[newName] = badgeData;
-          writeLocal('teams', teams);
-          await saveTeams(teams);
-          populateOpponentSelect();
-          await addMatch(newName, datetime, location, competition, generation);
-        };
-
+        let badgeData = '';
         if (badgeFile) {
-          const fr = new FileReader();
-          fr.onload = () => finishAdd(fr.result);
-          fr.readAsDataURL(badgeFile);
-        } else {
-          await finishAdd(null);
+          try { badgeData = await readFileAsDataUrl(badgeFile); } catch (err) { badgeData = ''; }
         }
-      } else {
-        await addMatch(opponent, datetime, location, competition, generation);
+        // Save the team (name + optional badge) so it shows up in the dropdown next time
+        if (!(await saveTeam(newName, badgeData))) return;
+        opponent = newName;
+      }
+
+      const match = {
+        id: 'm_' + Date.now(),
+        opponent,
+        datetime,
+        location,
+        competition,
+        generation,
+        played: false
+      };
+
+      if (await upsertMatch(match)) {
+        matchForm.reset();
+        document.getElementById('newTeam').style.display = 'none';
+        await populateOpponentSelect();
+        render();
       }
     });
 
-    async function addMatch(opponent, datetime, location, competition, generation) {
-      const arr = await loadMatches();
-      arr.push({ id: 'm_' + Date.now(), opponent, datetime, location, competition, generation, played: false });
-      await saveMatches(arr);
+    clearMatches.addEventListener('click', () => {
       matchForm.reset();
-      populateOpponentSelect();
-      render();
-    }
+      document.getElementById('newTeam').style.display = 'none';
+    });
 
-    clearMatches.addEventListener('click', () => { matchForm.reset(); });
-
-    populateOpponentSelect();
-    ensureClubBadge();
-    render();
+    // ---------- tabs ----------
 
     const tabUpcoming = document.getElementById('tabUpcoming');
     const tabResultsBtn = document.getElementById('tabResultsBtn');
@@ -432,6 +474,11 @@
 
     tabUpcoming.addEventListener('click', () => showPanel('upcoming'));
     tabResultsBtn.addEventListener('click', () => showPanel('results'));
+
+    // ---------- start ----------
+
+    populateOpponentSelect();
+    render();
   </script>
 </body>
 </html>
