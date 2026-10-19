@@ -5,7 +5,7 @@
 		<meta name="viewport" content="width=device-width,initial-scale=1" />
 		<title>ORK Rudar Banovići</title>
 		<link rel="icon" type="image/png" href="logo.png" />
-		<link rel="stylesheet" href="style.css?v=6" />
+		<link rel="stylesheet" href="style.css?v=7" />
 	</head>
 	<body>
 		<div id="globalLoader" class="global-loader" aria-live="polite" aria-busy="false" hidden>
@@ -58,6 +58,7 @@
 						<button class="menu-item" id="galleryBtn">Galerija</button>
 						<button class="menu-item" id="terminiBtn">Termini</button>
 						<button class="menu-item" id="matchesBtn">Utakmice</button>
+						<button class="menu-item" id="playersBtn">Igrači</button>
 						<button class="menu-item" id="logoutBtn">Odjava</button>
 					</div>
 				</div>
@@ -236,9 +237,21 @@
 					<div id="matchDetailBody"></div>
 				</div>
 			</section>
+			<section id="viewPlayers" class="view-panel">
+				<div class="md-wrap">
+					<h2 class="pl-title">Igrači ORK Rudar Banovići</h2>
+					<div id="playersList"></div>
+				</div>
+			</section>
+			<section id="viewPlayer" class="view-panel">
+				<div class="md-wrap">
+					<button type="button" id="playerBack" class="btn secondary small md-back">&larr; Igrači</button>
+					<div id="playerBody"></div>
+				</div>
+			</section>
 		</main>
 
-		<script src="script.js?v=6"></script>
+		<script src="script.js?v=7"></script>
 	</body>
 </html>
 

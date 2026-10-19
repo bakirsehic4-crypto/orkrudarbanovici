@@ -18,7 +18,7 @@ log = logging.getLogger("server")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USERNAME = "admin"
-SERVER_VERSION = "2026-10-18-roster"
+SERVER_VERSION = "2026-10-18-players"
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +194,15 @@ def init_db():
             CREATE TABLE IF NOT EXISTS club_teams (
                 name TEXT PRIMARY KEY,
                 badge TEXT
+            )
+        """)
+        # Fotografije igraca (neobavezno; samo na stranici igraca)
+        db_execute(conn, """
+            CREATE TABLE IF NOT EXISTS club_players (
+                name_key TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                photo TEXT,
+                updated BIGINT NOT NULL DEFAULT 0
             )
         """)
         conn.commit()
@@ -822,6 +831,106 @@ def update_avatar(username):
         conn.commit()
         if updated == 0:
             return jsonify({"ok": False, "error": "User not found"}), 404
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Player photos (optional, admin only to change)
+# ---------------------------------------------------------------------------
+
+def player_key(name):
+    return " ".join(str(name or "").split()).lower()
+
+
+@app.route('/api/players', methods=['GET'])
+def list_players():
+    """Only metadata (no photo data) so the list stays small and fast."""
+    conn = get_db_connection()
+    try:
+        rows = db_fetchall(
+            conn,
+            "SELECT name_key, name, (photo IS NOT NULL AND photo <> '') AS has_photo, updated FROM club_players"
+        )
+        return jsonify({
+            r["name_key"]: {"name": r["name"], "hasPhoto": bool(r["has_photo"]), "updated": r["updated"]}
+            for r in rows
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/players/photo', methods=['GET'])
+def get_player_photo():
+    key = player_key(request.args.get("name"))
+    conn = get_db_connection()
+    try:
+        row = db_fetchone(conn, "SELECT photo FROM club_players WHERE name_key = %s", (key,))
+    finally:
+        conn.close()
+    if not row or not row["photo"]:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    try:
+        header, b64 = row["photo"].split(",", 1)
+        mimetype = header[5:].split(";")[0] or "image/jpeg"
+        data = base64.b64decode(b64)
+    except (ValueError, binascii.Error):
+        return jsonify({"ok": False, "error": "Bad image"}), 500
+    resp = Response(data, mimetype=mimetype)
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+@app.route('/api/players/photo', methods=['POST'])
+def set_player_photo():
+    denied = admin_required()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    name = clean_text(" ".join(str(data.get("name") or "").split()), 80)
+    photo = str(data.get("photo") or "")
+    if not name:
+        return jsonify({"ok": False, "error": "Player name is required."}), 400
+    if not photo.startswith("data:image/"):
+        return jsonify({"ok": False, "error": "Invalid image."}), 400
+    if len(photo) > 2_500_000:
+        return jsonify({"ok": False, "error": "Image is too large."}), 400
+
+    conn = get_db_connection()
+    try:
+        db_execute(
+            conn,
+            """
+            INSERT INTO club_players (name_key, name, photo, updated)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (name_key) DO UPDATE SET
+                name = EXCLUDED.name,
+                photo = EXCLUDED.photo,
+                updated = EXCLUDED.updated
+            """,
+            (player_key(name), name, photo, int(time.time() * 1000))
+        )
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
+@app.route('/api/players/photo', methods=['DELETE'])
+def delete_player_photo():
+    denied = admin_required()
+    if denied:
+        return denied
+    key = player_key(request.args.get("name"))
+    conn = get_db_connection()
+    try:
+        db_execute(
+            conn,
+            "UPDATE club_players SET photo = NULL, updated = %s WHERE name_key = %s",
+            (int(time.time() * 1000), key)
+        )
+        conn.commit()
         return jsonify({"ok": True})
     finally:
         conn.close()

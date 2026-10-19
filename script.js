@@ -295,7 +295,9 @@ const VIEWS = {
   gallery: 'viewGallery',
   termini: 'viewTermini',
   matches: 'viewMatches',
-  matchDetail: 'viewMatchDetail'
+  matchDetail: 'viewMatchDetail',
+  players: 'viewPlayers',
+  player: 'viewPlayer'
 };
 
 function closeMenu() {
@@ -319,6 +321,8 @@ function showView(name) {
   if (name === 'gallery') renderGallery();
   if (name === 'matches') renderMatches();
   if (name === 'matchDetail') renderMatchDetail();
+  if (name === 'players') renderPlayersList();
+  if (name === 'player') renderPlayerPage();
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,6 +1034,11 @@ function buildPlayerColumns(m, info, sides, entries, renderRight, emptyText) {
     if (!list.length) col.appendChild(h('div', 'md-empty', emptyText));
     list.forEach(entry => {
       const row = h('div', 'md-player');
+      if (key === 'club' && entry.name) {
+        row.classList.add('clickable');
+        row.title = 'Statistika igrača';
+        row.addEventListener('click', () => openPlayer(nameKey(entry.name)));
+      }
       row.appendChild(h('span', 'md-num' + (entry.number ? '' : ' empty'), entry.number || ''));
       row.appendChild(h('span', 'md-pname', entry.name || '—'));
       renderRight(row, entry);
@@ -1454,6 +1463,298 @@ async function renderMatchDetail() {
 }
 
 // ---------------------------------------------------------------------------
+// Igrači (lista i stranica igrača)
+// ---------------------------------------------------------------------------
+let currentPlayerKey = null;
+
+function nameKey(name) {
+  return String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function openPlayer(key) {
+  currentPlayerKey = key;
+  showView('player');
+  window.scrollTo(0, 0);
+}
+
+// Statistika se računa iz podataka utakmica (spisak, strijelci, isključenja). Igrač se prepoznaje po imenu.
+function computePlayerStats(matches) {
+  const players = new Map();
+
+  const touch = (entry, m) => {
+    const key = nameKey(entry.name);
+    if (!key) return null;
+    let rec = players.get(key);
+    if (!rec) {
+      rec = { key, name: String(entry.name).trim().replace(/\s+/g, ' '), number: '', latest: 0, games: new Map() };
+      players.set(key, rec);
+    }
+    const ts = new Date(m.datetime).getTime() || 0;
+    if (ts >= rec.latest) {
+      rec.latest = ts;
+      rec.name = String(entry.name).trim().replace(/\s+/g, ' ');
+      if (entry.number) rec.number = entry.number;
+    }
+    let game = rec.games.get(m.id);
+    if (!game) {
+      game = { match: m, goals: 0, susp: 0, red: 0 };
+      rec.games.set(m.id, game);
+    }
+    return game;
+  };
+
+  (matches || []).filter(m => m.played && m.details).forEach(m => {
+    const d = m.details;
+    const clubOnly = (list) => (Array.isArray(list) ? list : []).filter(p => p.side === 'club');
+    clubOnly(d.roster).forEach(p => touch(p, m));
+    clubOnly(d.scorers).forEach(p => {
+      const g = touch(p, m);
+      if (g) g.goals += Number(p.goals) || 0;
+    });
+    clubOnly(d.suspensions).forEach(p => {
+      const g = touch(p, m);
+      if (g) {
+        g.susp += Number(p.count) || 0;
+        if (p.red) g.red += 1;
+      }
+    });
+  });
+
+  return [...players.values()].map(rec => {
+    const games = [...rec.games.values()].sort((a, b) => new Date(b.match.datetime) - new Date(a.match.datetime));
+    const goals = games.reduce((n, g) => n + g.goals, 0);
+    return {
+      key: rec.key,
+      name: rec.name,
+      number: rec.number,
+      games,
+      played: games.length,
+      goals,
+      avg: games.length ? goals / games.length : 0,
+      susp: games.reduce((n, g) => n + g.susp, 0),
+      red: games.reduce((n, g) => n + g.red, 0)
+    };
+  });
+}
+
+function formatAvg(n) {
+  return n.toFixed(1).replace('.', ',');
+}
+
+async function loadPlayersMeta() {
+  try {
+    const data = await fetchJson(API_BASE + '/players');
+    return data && typeof data === 'object' ? data : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+async function renderPlayersList() {
+  const box = $('playersList');
+  if (!box) return;
+  let matches;
+  try {
+    matches = await withLoader(() => loadMatches());
+  } catch (err) {
+    box.innerHTML = '';
+    box.appendChild(h('div', 'md-note', 'Nije moguće učitati igrače. ' + err.message));
+    return;
+  }
+
+  const players = computePlayerStats(matches).sort((a, b) =>
+    b.goals - a.goals || b.played - a.played || a.name.localeCompare(b.name, 'bs'));
+  box.innerHTML = '';
+
+  if (!players.length) {
+    box.appendChild(h('div', 'md-note', 'Još nema igrača. Igrači se pojavljuju kad admin upiše spisak igrača u detaljima odigrane utakmice.'));
+    return;
+  }
+
+  const head = h('div', 'pl-head');
+  ['#', 'Igrač', 'Utk.', 'Golovi', 'Prosjek', 'Isklj.'].forEach((label, i) => {
+    head.appendChild(h('span', i === 4 ? 'pl-hide-sm' : '', label));
+  });
+  box.appendChild(head);
+
+  players.forEach((pl, index) => {
+    const row = h('div', 'pl-row');
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    row.addEventListener('click', () => openPlayer(pl.key));
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPlayer(pl.key); }
+    });
+
+    row.appendChild(h('span', 'pl-rank', String(index + 1)));
+    const nameCell = h('span', 'pl-name-cell');
+    if (pl.number) nameCell.appendChild(h('span', 'md-num', pl.number));
+    nameCell.appendChild(h('span', 'pl-name-text', pl.name));
+    row.appendChild(nameCell);
+    row.appendChild(h('span', 'pl-cell', String(pl.played)));
+    row.appendChild(h('span', 'pl-cell goals', String(pl.goals)));
+    row.appendChild(h('span', 'pl-cell pl-hide-sm', formatAvg(pl.avg)));
+    row.appendChild(h('span', 'pl-cell', String(pl.susp)));
+    box.appendChild(row);
+  });
+}
+
+function anonymousAvatar() {
+  const span = h('span', 'pl-anon');
+  span.setAttribute('aria-hidden', 'true');
+  span.innerHTML = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor">'
+    + '<circle cx="12" cy="8" r="4.2"/><path d="M3.5 21.5c0-4.7 3.8-8.5 8.5-8.5s8.5 3.8 8.5 8.5z"/></svg>';
+  return span;
+}
+
+function buildPlayerAvatar(name, metaEntry) {
+  const wrap = h('div', 'pl-avatar');
+  if (metaEntry && metaEntry.hasPhoto) {
+    const img = document.createElement('img');
+    img.alt = name;
+    img.src = API_BASE + '/players/photo?name=' + encodeURIComponent(name) + '&v=' + (metaEntry.updated || 0);
+    img.addEventListener('error', () => {
+      wrap.innerHTML = '';
+      wrap.appendChild(anonymousAvatar());
+    });
+    wrap.appendChild(img);
+  } else {
+    wrap.appendChild(anonymousAvatar());
+  }
+  return wrap;
+}
+
+function buildPlayerMatchRow(game) {
+  const m = game.match;
+  const row = h('div', 'pl-match');
+  row.tabIndex = 0;
+  row.setAttribute('role', 'button');
+  row.addEventListener('click', () => openMatchDetail(m.id));
+  row.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMatchDetail(m.id); }
+  });
+
+  const homeName = m.location === 'home' ? CLUB_NAME : m.opponent;
+  const awayName = m.location === 'home' ? m.opponent : CLUB_NAME;
+  const left = document.createElement('div');
+  left.appendChild(h('strong', '', `${homeName} ${m.homeScore} : ${m.awayScore} ${awayName}`));
+  left.appendChild(h('div', 'match-meta', [formatDate(m.datetime), m.competition, m.generation].filter(Boolean).join(' • ')));
+
+  const right = h('div', 'pl-stats');
+  const badge = matchResultBadge(m);
+  if (badge) right.appendChild(badge);
+  const goals = h('span', 'md-goals');
+  goals.title = 'Golovi';
+  goals.append(h('span', 'md-val', String(game.goals)), ballIcon());
+  right.appendChild(goals);
+  if (game.susp) right.appendChild(h('span', 'md-tagmini pl-susp', `${game.susp}× 2 min`));
+  if (game.red) right.appendChild(h('span', 'md-tagmini', 'CRVENI'));
+
+  row.append(left, right);
+  return row;
+}
+
+async function renderPlayerPage() {
+  const body = $('playerBody');
+  if (!body) return;
+  body.innerHTML = '';
+
+  let matches;
+  let meta;
+  try {
+    [matches, meta] = await withLoader(() => Promise.all([loadMatches(), loadPlayersMeta()]));
+  } catch (err) {
+    body.appendChild(h('div', 'md-note', 'Nije moguće učitati igrača. ' + err.message));
+    return;
+  }
+
+  const pl = computePlayerStats(matches).find(p => p.key === currentPlayerKey);
+  if (!pl) {
+    body.appendChild(h('div', 'md-note', 'Igrač nije pronađen.'));
+    return;
+  }
+  const metaEntry = meta[pl.key];
+  const hasPhoto = !!(metaEntry && metaEntry.hasPhoto);
+
+  // Gornji dio: slika (ili anonimna ikonica) i ime
+  const hero = h('div', 'md-hero pl-hero');
+  hero.appendChild(buildPlayerAvatar(pl.name, metaEntry));
+  hero.appendChild(h('div', 'pl-name', pl.name));
+  const tags = h('div', 'md-tags');
+  tags.appendChild(h('span', 'md-tag', CLUB_NAME));
+  if (pl.number) tags.appendChild(h('span', 'md-tag', 'Broj ' + pl.number));
+  hero.appendChild(tags);
+
+  if (isAdmin()) {
+    const controls = h('div', 'pl-controls');
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = 'image/*';
+    fileInput.style.display = 'none';
+
+    const upload = h('button', 'btn small', hasPhoto ? 'Promijeni sliku' : 'Dodaj sliku');
+    upload.type = 'button';
+    upload.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      try {
+        const photo = await fileToResizedDataUrl(file, 480, 'image/jpeg', 0.85);
+        await withLoader(
+          () => fetchJson(API_BASE + '/players/photo', { method: 'POST', body: JSON.stringify({ name: pl.name, photo }) }),
+          'Spremanje slike...'
+        );
+        renderPlayerPage();
+      } catch (err) {
+        alert('Slika nije spremljena: ' + err.message);
+      }
+    });
+    controls.append(upload, fileInput);
+
+    if (hasPhoto) {
+      const remove = h('button', 'btn secondary small', 'Ukloni sliku');
+      remove.type = 'button';
+      remove.addEventListener('click', async () => {
+        if (!confirm('Ukloniti sliku ovog igrača?')) return;
+        try {
+          await withLoader(
+            () => fetchJson(API_BASE + '/players/photo?name=' + encodeURIComponent(pl.name), { method: 'DELETE' }),
+            'Uklanjanje slike...'
+          );
+          renderPlayerPage();
+        } catch (err) {
+          alert('Slika nije uklonjena: ' + err.message);
+        }
+      });
+      controls.appendChild(remove);
+    }
+    hero.appendChild(controls);
+  }
+  body.appendChild(hero);
+
+  // Statistika
+  const stats = h('div', 'md-info');
+  [
+    ['Utakmice', String(pl.played)],
+    ['Golovi', String(pl.goals)],
+    ['Prosjek golova', formatAvg(pl.avg)],
+    ['Isključenja', String(pl.susp) + (pl.red ? ` (+${pl.red} crveni)` : '')]
+  ].forEach(([label, value]) => {
+    const cell = document.createElement('div');
+    cell.appendChild(h('label', '', label));
+    cell.appendChild(h('strong', '', value));
+    stats.appendChild(cell);
+  });
+  body.appendChild(stats);
+
+  // Po utakmicama
+  const card = mdCard('PO UTAKMICAMA');
+  const cardBody = card.querySelector('.md-card-body');
+  pl.games.forEach(game => cardBody.appendChild(buildPlayerMatchRow(game)));
+  body.appendChild(card);
+}
+
+// ---------------------------------------------------------------------------
 // Pokretanje
 // ---------------------------------------------------------------------------
 document.addEventListener('DOMContentLoaded', () => {
@@ -1509,7 +1810,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!menuList.contains(e.target) && e.target !== menuBtn) closeMenu();
     });
   }
-  const nav = { announcementsBtn: 'announcements', chatBtn: 'chat', galleryBtn: 'gallery', terminiBtn: 'termini', matchesBtn: 'matches' };
+  const nav = { announcementsBtn: 'announcements', chatBtn: 'chat', galleryBtn: 'gallery', terminiBtn: 'termini', matchesBtn: 'matches', playersBtn: 'players' };
   Object.keys(nav).forEach(id => {
     const btn = $(id);
     if (btn) btn.addEventListener('click', () => showView(nav[id]));
@@ -1611,6 +1912,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Povratak sa detalja utakmice
   if ($('matchDetailBack')) $('matchDetailBack').addEventListener('click', () => showView('matches'));
+  if ($('playerBack')) $('playerBack').addEventListener('click', () => showView('players'));
 
   initChat();
   initMatches();
