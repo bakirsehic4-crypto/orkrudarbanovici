@@ -45,21 +45,79 @@ function h(tag, className, text) {
   return node;
 }
 
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+// 18/10/2026
+function formatDate(value) {
+  const x = new Date(value);
+  return isNaN(x) ? '' : `${pad2(x.getDate())}/${pad2(x.getMonth() + 1)}/${x.getFullYear()}`;
+}
+
+// 10:30
+function formatTime(value) {
+  const x = new Date(value);
+  return isNaN(x) ? '' : `${pad2(x.getHours())}:${pad2(x.getMinutes())}`;
+}
+
 function formatRelativeTime(ts) {
   if (!ts) return '';
   const diff = Math.floor((Date.now() - Number(ts)) / 1000);
   if (diff < 60) return 'Upravo sada';
   if (diff < 3600) return `Prije ${Math.floor(diff / 60)} min`;
   if (diff < 86400) return `Prije ${Math.floor(diff / 3600)} h`;
-  return new Date(Number(ts)).toLocaleDateString('bs-BA');
+  return formatDate(Number(ts));
 }
 
-function showLoader(show, text) {
+let loaderDepth = 0;
+let loaderTimer = null;
+
+function revealLoader() {
   const loader = $('globalLoader');
   if (!loader) return;
-  if (text && $('globalLoaderText')) $('globalLoaderText').textContent = text;
-  loader.hidden = !show;
-  loader.setAttribute('aria-busy', String(!!show));
+  loader.hidden = false;
+  loader.setAttribute('aria-busy', 'true');
+}
+
+// show=true/false dolaze u parovima. delay (ms) sprečava treperenje kad se nešto učita brzo.
+function showLoader(show, text, delay = 0) {
+  const loader = $('globalLoader');
+  if (!loader) return;
+  if (show) {
+    loaderDepth++;
+    if (text && $('globalLoaderText')) $('globalLoaderText').textContent = text;
+    if (!loader.hidden) return;
+    if (delay > 0) {
+      if (!loaderTimer) {
+        loaderTimer = setTimeout(() => {
+          loaderTimer = null;
+          if (loaderDepth > 0) revealLoader();
+        }, delay);
+      }
+      return;
+    }
+    clearTimeout(loaderTimer);
+    loaderTimer = null;
+    revealLoader();
+  } else {
+    loaderDepth = Math.max(0, loaderDepth - 1);
+    if (loaderDepth === 0) {
+      clearTimeout(loaderTimer);
+      loaderTimer = null;
+      loader.hidden = true;
+      loader.setAttribute('aria-busy', 'false');
+    }
+  }
+}
+
+async function withLoader(task, text = 'Podaci se učitavaju...') {
+  showLoader(true, text, 250);
+  try {
+    return await task();
+  } finally {
+    showLoader(false);
+  }
 }
 
 async function fetchJson(url, options = {}) {
@@ -270,7 +328,7 @@ async function renderAnnouncements() {
   const list = $('announcements');
   if (!list) return;
   try {
-    const items = await fetchJson(API_BASE + '/announcements');
+    const items = await withLoader(() => fetchJson(API_BASE + '/announcements'));
     list.innerHTML = '';
     if (!Array.isArray(items) || !items.length) {
       list.appendChild(h('li', 'chat-empty', 'Trenutno nema novih obavijesti.'));
@@ -388,7 +446,7 @@ async function renderGallery() {
   const feed = $('galleryFeed');
   if (!feed) return;
   try {
-    const items = await fetchJson(API_BASE + '/gallery');
+    const items = await withLoader(() => fetchJson(API_BASE + '/gallery'));
     feed.innerHTML = '';
     if (!Array.isArray(items) || !items.length) {
       feed.appendChild(h('div', 'gallery-empty', 'Još nema slika u galeriji.'));
@@ -406,8 +464,8 @@ async function renderGallery() {
 // ---------------------------------------------------------------------------
 function startChatRefresh() {
   stopChatRefresh();
-  renderChat();
-  chatTimer = setInterval(renderChat, 4000);
+  renderChat(true);
+  chatTimer = setInterval(() => renderChat(false), 4000);
 }
 
 function stopChatRefresh() {
@@ -417,11 +475,13 @@ function stopChatRefresh() {
   }
 }
 
-async function renderChat() {
+async function renderChat(showSpinner = false) {
   const container = $('chatMessages');
   if (!container || currentView !== 'chat') return;
   try {
-    const messages = await fetchJson(API_BASE + '/chat');
+    const messages = showSpinner
+      ? await withLoader(() => fetchJson(API_BASE + '/chat'))
+      : await fetchJson(API_BASE + '/chat');
     const signature = messages.map(m => m.id).join(',');
     if (signature === lastChatSignature) return;
     lastChatSignature = signature;
@@ -609,6 +669,17 @@ function showResultInputs(row, match) {
   cancel.addEventListener('click', renderMatches);
 }
 
+// W = pobjeda Rudara, L = poraz, D = neriješeno
+function matchResultBadge(m) {
+  if (!m.played) return null;
+  const score = clubOppScore(m);
+  const kind = score.club > score.opp ? 'w' : score.club < score.opp ? 'l' : 'd';
+  const info = { w: ['W', 'Pobjeda'], l: ['L', 'Poraz'], d: ['D', 'Neriješeno'] }[kind];
+  const badge = h('span', 'match-result ' + kind, info[0]);
+  badge.title = info[1];
+  return badge;
+}
+
 function buildMatchItem(it, teams) {
   const row = h('div', 'match-item clickable');
   row.tabIndex = 0;
@@ -632,7 +703,7 @@ function buildMatchItem(it, teams) {
   title.appendChild(document.createTextNode(it.played ? `  ${it.homeScore} - ${it.awayScore}  ` : '  vs  '));
   title.appendChild(teamLabel(awayName, teams));
 
-  const when = new Date(it.datetime).toLocaleString('bs-BA');
+  const when = `${formatDate(it.datetime)} ${formatTime(it.datetime)}`;
   const parts = [when];
   if (!it.played) parts.push(it.location === 'home' ? 'Kući' : 'Gostujuća');
   if (it.competition) parts.push(it.competition);
@@ -656,7 +727,11 @@ function buildMatchItem(it, teams) {
     actions.appendChild(del);
   }
 
-  row.append(left, actions);
+  const right = h('div', 'match-right');
+  const badge = matchResultBadge(it);
+  if (badge) right.appendChild(badge);
+  right.appendChild(actions);
+  row.append(left, right);
   return row;
 }
 
@@ -688,7 +763,7 @@ async function renderMatches() {
   let items;
   let teams;
   try {
-    [items, teams] = await Promise.all([loadMatches(), loadTeams()]);
+    [items, teams] = await withLoader(() => Promise.all([loadMatches(), loadTeams()]));
   } catch (err) {
     upcomingList.innerHTML = '';
     resultsList.innerHTML = '';
@@ -825,16 +900,6 @@ function clubOppScore(m) {
     club: Number(homeIsClub ? m.homeScore : m.awayScore) || 0,
     opp: Number(homeIsClub ? m.awayScore : m.homeScore) || 0
   };
-}
-
-function formatDate(dt) {
-  const x = new Date(dt);
-  return isNaN(x) ? '' : x.toLocaleDateString('bs-BA');
-}
-
-function formatTime(dt) {
-  const x = new Date(dt);
-  return isNaN(x) ? '' : x.toLocaleTimeString('bs-BA', { hour: '2-digit', minute: '2-digit' });
 }
 
 function mdCard(title) {
@@ -1333,12 +1398,11 @@ async function renderMatchDetail() {
   const body = $('matchDetailBody');
   if (!body) return;
   body.innerHTML = '';
-  body.appendChild(h('div', 'match-meta', 'Učitavanje...'));
 
   let items;
   let teams;
   try {
-    [items, teams] = await Promise.all([loadMatches(), loadTeams()]);
+    [items, teams] = await withLoader(() => Promise.all([loadMatches(), loadTeams()]));
   } catch (err) {
     body.innerHTML = '';
     body.appendChild(h('div', 'md-note', 'Nije moguće učitati utakmicu. ' + err.message));

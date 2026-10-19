@@ -473,3 +473,10 @@ body.locked main,.locked header{filter:blur(2px) grayscale(.08);pointer-events:n
 	.md-team img,.md-team-initial{width:52px;height:52px}
 	.md-cols,.md-halves{grid-template-columns:1fr}
 }
+
+/* W / L oznaka rezultata */
+.match-right{display:flex;align-items:center;gap:10px}
+.match-result{width:30px;height:30px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex:0 0 auto}
+.match-result.w{background:rgba(74,222,128,0.18);color:var(--accent);border:1px solid rgba(74,222,128,0.5)}
+.match-result.l{background:rgba(248,113,113,0.16);color:#f87171;border:1px solid rgba(248,113,113,0.5)}
+.match-result.d{background:rgba(250,204,21,0.14);color:#facc15;border:1px solid rgba(250,204,21,0.45)}
