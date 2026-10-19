@@ -1030,7 +1030,7 @@ function buildPlayerColumns(m, info, sides, entries, renderRight, emptyText) {
     if (!list.length) col.appendChild(h('div', 'md-empty', emptyText));
     list.forEach(entry => {
       const row = h('div', 'md-player');
-      row.appendChild(h('span', 'md-num', entry.number || ''));
+      row.appendChild(h('span', 'md-num' + (entry.number ? '' : ' empty'), entry.number || ''));
       row.appendChild(h('span', 'md-pname', entry.name || '—'));
       renderRight(row, entry);
       col.appendChild(row);
@@ -1040,11 +1040,27 @@ function buildPlayerColumns(m, info, sides, entries, renderRight, emptyText) {
   return cols;
 }
 
+function ballIcon() {
+  const span = h('span', 'md-ball');
+  span.setAttribute('aria-hidden', 'true');
+  span.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" xmlns="http://www.w3.org/2000/svg">'
+    + '<circle cx="12" cy="12" r="10.5" fill="#ffffff" stroke="#1f2937" stroke-width="1.2"/>'
+    + '<path d="M12 7.2l3.6 2.6-1.4 4.2H9.8L8.4 9.8z" fill="#1f2937"/>'
+    + '<path d="M12 7.2V3M15.6 9.8l4-1.3M14.2 14l2.4 3.4M9.8 14l-2.4 3.4M8.4 9.8l-4-1.3" stroke="#1f2937" stroke-width="1.2" fill="none" stroke-linecap="round"/>'
+    + '</svg>';
+  return span;
+}
+
 function buildScorersCard(m, d, info, sides) {
   const card = mdCard('LISTA STRIJELACA');
   const scorers = (Array.isArray(d.scorers) ? d.scorers : []).slice().sort((a, b) => b.goals - a.goals);
   card.querySelector('.md-card-body').appendChild(
-    buildPlayerColumns(m, info, sides, scorers, (row, e) => row.appendChild(h('span', 'md-val', String(e.goals))), 'Nema upisanih strijelaca.')
+    buildPlayerColumns(m, info, sides, scorers, (row, e) => {
+      const goals = h('span', 'md-goals');
+      goals.title = 'Golovi';
+      goals.append(h('span', 'md-val', String(e.goals)), ballIcon());
+      row.appendChild(goals);
+    }, 'Nema upisanih strijelaca.')
   );
   return card;
 }
