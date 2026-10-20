@@ -15,7 +15,6 @@ let currentView = 'announcements';
 let authMode = 'login';
 let myAvatar = '';
 let chatTimer = null;
-let lastChatSignature = '';
 let activeGeneration = '2010/11';
 const avatarCache = {};
 const avatarPending = {};
@@ -277,8 +276,8 @@ async function onLoggedIn(user) {
 function logOut() {
   setCurrentUser('');
   myAvatar = '';
-  lastChatSignature = '';
   stopChatRefresh();
+  resetChatState();
   closeMenu();
   updateHeaderAvatar();
   applyRoleUi();
@@ -370,53 +369,334 @@ async function renderAnnouncements() {
 }
 
 // ---------------------------------------------------------------------------
-// Galerija
+// Povećanje slika (lightbox): zumiranje, pomjeranje, listanje
 // ---------------------------------------------------------------------------
-async function saveGalleryItem(item, withImage) {
-  try {
-    await fetchJson(API_BASE + '/gallery', {
-      method: 'POST',
-      body: JSON.stringify(withImage ? item : { ...item, image: '' })
-    });
-  } catch (err) {
-    alert('Spremanje nije uspjelo: ' + err.message);
+const lb = {
+  root: null, stage: null, img: null, caption: null, counter: null, zoomLabel: null,
+  prev: null, next: null,
+  items: [], index: 0, scale: 1, x: 0, y: 0,
+  pointers: new Map(), pinchDist: 0, moved: false, swipeStart: null, lastTap: 0
+};
+
+function lbClamp() {
+  const W = lb.stage.clientWidth;
+  const H = lb.stage.clientHeight;
+  const maxX = Math.max(0, (lb.img.clientWidth * lb.scale - W) / 2);
+  const maxY = Math.max(0, (lb.img.clientHeight * lb.scale - H) / 2);
+  lb.x = Math.min(maxX, Math.max(-maxX, lb.x));
+  lb.y = Math.min(maxY, Math.max(-maxY, lb.y));
+}
+
+function lbApply() {
+  lbClamp();
+  lb.img.style.transform = `translate(${lb.x}px, ${lb.y}px) scale(${lb.scale})`;
+  lb.zoomLabel.textContent = Math.round(lb.scale * 100) + '%';
+  lb.root.classList.toggle('zoomed', lb.scale > 1.01);
+}
+
+function lbZoomAt(cx, cy, newScale) {
+  const rect = lb.stage.getBoundingClientRect();
+  const target = Math.min(6, Math.max(1, newScale));
+  const px = (cx - rect.left - rect.width / 2 - lb.x) / lb.scale;
+  const py = (cy - rect.top - rect.height / 2 - lb.y) / lb.scale;
+  lb.x = cx - rect.left - rect.width / 2 - px * target;
+  lb.y = cy - rect.top - rect.height / 2 - py * target;
+  lb.scale = target;
+  if (target === 1) { lb.x = 0; lb.y = 0; }
+  lbApply();
+}
+
+function lbZoomCenter(factor) {
+  const rect = lb.stage.getBoundingClientRect();
+  lbZoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, lb.scale * factor);
+}
+
+function lbShow(index) {
+  const n = lb.items.length;
+  if (!n) return;
+  lb.index = (index + n) % n;
+  const item = lb.items[lb.index];
+  lb.scale = 1;
+  lb.x = 0;
+  lb.y = 0;
+  lb.img.style.transform = '';
+  lb.img.src = item.src;
+  lb.caption.textContent = item.caption || '';
+  lb.caption.style.display = item.caption ? '' : 'none';
+  lb.counter.textContent = n > 1 ? `${lb.index + 1} / ${n}` : '';
+  lb.prev.style.display = lb.next.style.display = n > 1 ? '' : 'none';
+  lbApply();
+  if (n > 1) {
+    [lb.index + 1, lb.index - 1].forEach(i => { new Image().src = lb.items[(i + n) % n].src; });
   }
 }
 
-function buildGalleryCard(item) {
+function closeLightbox() {
+  if (!lb.root || lb.root.hidden) return;
+  lb.root.hidden = true;
+  document.body.classList.remove('lb-open');
+  lb.img.removeAttribute('src');
+}
+
+function ensureLightbox() {
+  if (lb.root) return;
+  const mk = (cls, text, label) => {
+    const b = h('button', cls, text);
+    b.type = 'button';
+    b.setAttribute('aria-label', label);
+    return b;
+  };
+
+  const root = h('div', 'lightbox');
+  root.hidden = true;
+  root.setAttribute('role', 'dialog');
+  root.setAttribute('aria-modal', 'true');
+
+  const stage = h('div', 'lb-stage');
+  const img = document.createElement('img');
+  img.className = 'lb-img';
+  img.alt = '';
+  img.draggable = false;
+  stage.appendChild(img);
+
+  const closeBtn = mk('lb-btn lb-close', '×', 'Zatvori');
+  const prev = mk('lb-btn lb-nav lb-prev', '‹', 'Prethodna slika');
+  const next = mk('lb-btn lb-nav lb-next', '›', 'Sljedeća slika');
+  const counter = h('div', 'lb-counter');
+  const caption = h('div', 'lb-caption');
+  const zoomBar = h('div', 'lb-zoom');
+  const zoomOut = mk('lb-btn', '−', 'Smanji');
+  const zoomLabel = mk('lb-btn lb-zoom-label', '100%', 'Vrati na 100%');
+  const zoomIn = mk('lb-btn', '+', 'Povećaj');
+  zoomBar.append(zoomOut, zoomLabel, zoomIn);
+
+  root.append(stage, closeBtn, prev, next, counter, caption, zoomBar);
+  document.body.appendChild(root);
+  Object.assign(lb, { root, stage, img, caption, counter, zoomLabel, prev, next });
+
+  closeBtn.addEventListener('click', closeLightbox);
+  prev.addEventListener('click', () => lbShow(lb.index - 1));
+  next.addEventListener('click', () => lbShow(lb.index + 1));
+  zoomIn.addEventListener('click', () => lbZoomCenter(1.4));
+  zoomOut.addEventListener('click', () => lbZoomCenter(1 / 1.4));
+  zoomLabel.addEventListener('click', () => { lb.scale = 1; lb.x = 0; lb.y = 0; lbApply(); });
+
+  stage.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    lbZoomAt(e.clientX, e.clientY, lb.scale * (e.deltaY < 0 ? 1.2 : 1 / 1.2));
+  }, { passive: false });
+
+  const pointerDistance = () => {
+    const [a, b] = [...lb.pointers.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+
+  stage.addEventListener('pointerdown', (e) => {
+    stage.setPointerCapture(e.pointerId);
+    lb.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    lb.moved = false;
+    if (lb.pointers.size === 2) lb.pinchDist = pointerDistance();
+    lb.swipeStart = lb.pointers.size === 1 ? { x: e.clientX, y: e.clientY } : null;
+  });
+
+  stage.addEventListener('pointermove', (e) => {
+    const p = lb.pointers.get(e.pointerId);
+    if (!p) return;
+    const dx = e.clientX - p.x;
+    const dy = e.clientY - p.y;
+    p.x = e.clientX;
+    p.y = e.clientY;
+
+    if (lb.pointers.size === 2) {
+      const [a, b] = [...lb.pointers.values()];
+      const d = pointerDistance();
+      if (lb.pinchDist) lbZoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, lb.scale * d / lb.pinchDist);
+      lb.pinchDist = d;
+      lb.moved = true;
+      return;
+    }
+    if (lb.swipeStart && Math.hypot(e.clientX - lb.swipeStart.x, e.clientY - lb.swipeStart.y) > 8) lb.moved = true;
+    if (lb.scale > 1.01) {
+      lb.x += dx;
+      lb.y += dy;
+      lbApply();
+    }
+  });
+
+  const pointerEnd = (e) => {
+    const start = lb.swipeStart;
+    lb.pointers.delete(e.pointerId);
+    lb.pinchDist = 0;
+    if (!start || lb.pointers.size > 0) { lb.swipeStart = null; return; }
+    lb.swipeStart = null;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+
+    if (lb.scale <= 1.01 && Math.abs(dx) > 60 && Math.abs(dy) < 60) {
+      lbShow(lb.index + (dx < 0 ? 1 : -1));
+      return;
+    }
+    if (lb.moved) return;
+
+    // dodir / klik
+    const overImage = document.elementFromPoint(e.clientX, e.clientY) === lb.img;
+    if (!overImage && lb.scale <= 1.01) { closeLightbox(); return; }
+    const now = Date.now();
+    if (now - lb.lastTap < 300) {
+      lbZoomAt(e.clientX, e.clientY, lb.scale > 1.01 ? 1 : 2.5);
+      lb.lastTap = 0;
+    } else {
+      lb.lastTap = now;
+    }
+  };
+  stage.addEventListener('pointerup', pointerEnd);
+  stage.addEventListener('pointercancel', (e) => { lb.pointers.delete(e.pointerId); lb.pinchDist = 0; lb.swipeStart = null; });
+
+  document.addEventListener('keydown', (e) => {
+    if (lb.root.hidden) return;
+    if (e.key === 'Escape') closeLightbox();
+    else if (e.key === 'ArrowRight') lbShow(lb.index + 1);
+    else if (e.key === 'ArrowLeft') lbShow(lb.index - 1);
+    else if (e.key === '+' || e.key === '=') lbZoomCenter(1.4);
+    else if (e.key === '-') lbZoomCenter(1 / 1.4);
+    else if (e.key === '0') { lb.scale = 1; lb.x = 0; lb.y = 0; lbApply(); }
+  });
+  window.addEventListener('resize', () => { if (!lb.root.hidden) lbApply(); });
+}
+
+// items: [{ src, caption }]
+function openLightbox(items, index = 0) {
+  if (!items || !items.length) return;
+  ensureLightbox();
+  lb.items = items;
+  lb.root.hidden = false;
+  document.body.classList.add('lb-open');
+  lbShow(index);
+}
+
+// ---------------------------------------------------------------------------
+// Galerija
+// ---------------------------------------------------------------------------
+let galleryItems = [];
+
+// "Prije 5 min" za novo, a za starije 18/10/2026 10:30
+function formatStamp(ts) {
+  if (Date.now() - Number(ts) < 24 * 3600 * 1000) return formatRelativeTime(ts);
+  return `${formatDate(ts)} ${formatTime(ts)}`;
+}
+
+function galleryImageUrl(id) {
+  return API_BASE + '/gallery/' + encodeURIComponent(id) + '/image';
+}
+
+function buildGalleryCard(item, index) {
   const card = h('article', 'gallery-card');
 
   const img = document.createElement('img');
   img.className = 'gallery-image';
-  img.src = item.image;
+  img.loading = 'lazy';
   img.alt = item.description || 'Galerija slika';
+  img.src = galleryImageUrl(item.id);
+  img.title = 'Kliknite za povećanje';
+  img.addEventListener('click', () => openLightbox(galleryItems, index));
 
   const body = h('div', 'gallery-body');
-  body.appendChild(h('div', 'gallery-meta', `${item.author || 'Admin'} · ${formatRelativeTime(item.ts)}`));
-  body.appendChild(h('p', 'gallery-description', item.description || 'Bez opisa.'));
+  body.appendChild(h('div', 'gallery-meta', `${item.author || 'Admin'} · ${formatStamp(item.ts)}`));
+  if (item.description) body.appendChild(h('p', 'gallery-description', item.description));
 
+  // --- reakcije: jedna po korisniku ---
   const actions = h('div', 'gallery-actions');
-  const likeBtn = h('button', 'gallery-action', `👍 ${Number(item.likes || 0)}`);
-  likeBtn.type = 'button';
-  likeBtn.addEventListener('click', async () => {
-    item.likes = Number(item.likes || 0) + 1;
+  const likeBtn = h('button', 'gallery-action');
+  const dislikeBtn = h('button', 'gallery-action');
+  likeBtn.type = dislikeBtn.type = 'button';
+  const paint = () => {
     likeBtn.textContent = `👍 ${item.likes}`;
-    await saveGalleryItem(item, false);
-  });
-  const dislikeBtn = h('button', 'gallery-action', `👎 ${Number(item.dislikes || 0)}`);
-  dislikeBtn.type = 'button';
-  dislikeBtn.addEventListener('click', async () => {
-    item.dislikes = Number(item.dislikes || 0) + 1;
     dislikeBtn.textContent = `👎 ${item.dislikes}`;
-    await saveGalleryItem(item, false);
-  });
+    likeBtn.classList.toggle('active', item.myReaction === 'like');
+    dislikeBtn.classList.toggle('active', item.myReaction === 'dislike');
+  };
+  let busy = false;
+  const react = async (value) => {
+    if (busy) return;
+    busy = true;
+    const before = { likes: item.likes, dislikes: item.dislikes, my: item.myReaction };
+    const next = item.myReaction === value ? '' : value;
+    if (item.myReaction === 'like') item.likes--;
+    if (item.myReaction === 'dislike') item.dislikes--;
+    if (next === 'like') item.likes++;
+    if (next === 'dislike') item.dislikes++;
+    item.myReaction = next;
+    paint();
+    try {
+      const res = await fetchJson(API_BASE + '/gallery/' + encodeURIComponent(item.id) + '/react', {
+        method: 'POST',
+        body: JSON.stringify({ value: next })
+      });
+      item.likes = res.likes;
+      item.dislikes = res.dislikes;
+      item.myReaction = res.myReaction || '';
+    } catch (err) {
+      item.likes = before.likes;
+      item.dislikes = before.dislikes;
+      item.myReaction = before.my;
+      alert('Reakcija nije spremljena: ' + err.message);
+    } finally {
+      busy = false;
+      paint();
+    }
+  };
+  likeBtn.addEventListener('click', () => react('like'));
+  dislikeBtn.addEventListener('click', () => react('dislike'));
+  paint();
   actions.append(likeBtn, dislikeBtn);
 
+  if (isAdmin()) {
+    const del = h('button', 'gallery-action danger', 'Obriši sliku');
+    del.type = 'button';
+    del.addEventListener('click', async () => {
+      if (!confirm('Obrisati ovu sliku (i sve komentare)?')) return;
+      try {
+        await fetchJson(API_BASE + '/gallery/' + encodeURIComponent(item.id), { method: 'DELETE' });
+        renderGallery();
+      } catch (err) {
+        alert('Brisanje nije uspjelo: ' + err.message);
+      }
+    });
+    actions.appendChild(del);
+  }
+
+  // --- komentari ---
   const commentsList = h('div', 'gallery-comments');
   const addCommentRow = (comment) => {
     const row = h('div', 'gallery-comment');
-    row.appendChild(h('strong', '', (comment.user || 'Korisnik') + ': '));
-    row.appendChild(document.createTextNode(comment.text || ''));
+    const avatar = h('div', 'gal-avatar');
+    fillAvatar(avatar, comment.user || '?');
+
+    const content = h('div', 'gal-comment-body');
+    const head = h('div', 'gal-comment-head');
+    head.appendChild(h('strong', '', comment.user || 'Korisnik'));
+    const when = h('span', 'gal-comment-time', formatStamp(comment.ts));
+    when.title = `${formatDate(comment.ts)} ${formatTime(comment.ts)}`;
+    head.appendChild(when);
+    content.append(head, h('div', 'gal-comment-text', comment.text));
+    row.append(avatar, content);
+
+    const own = String(comment.user || '').toLowerCase() === currentUser().toLowerCase();
+    if (isAdmin() || own) {
+      const remove = h('button', 'gal-comment-del', '×');
+      remove.type = 'button';
+      remove.title = 'Obriši komentar';
+      remove.addEventListener('click', async () => {
+        if (!confirm('Obrisati komentar?')) return;
+        try {
+          await fetchJson(API_BASE + '/gallery/' + encodeURIComponent(item.id) + '/comments/' + encodeURIComponent(comment.id), { method: 'DELETE' });
+          row.remove();
+        } catch (err) {
+          alert('Komentar nije obrisan: ' + err.message);
+        }
+      });
+      row.appendChild(remove);
+    }
     commentsList.appendChild(row);
   };
   (Array.isArray(item.comments) ? item.comments : []).forEach(addCommentRow);
@@ -425,19 +705,30 @@ function buildGalleryCard(item) {
   const commentInput = document.createElement('input');
   commentInput.type = 'text';
   commentInput.placeholder = 'Dodaj komentar...';
-  commentInput.maxLength = 200;
+  commentInput.maxLength = 300;
   commentInput.className = 'gallery-comment-input';
   const commentBtn = h('button', 'btn secondary small', 'Komentiraj');
   commentBtn.type = 'button';
-  commentBtn.addEventListener('click', async () => {
-    const text = (commentInput.value || '').trim();
+  const sendComment = async () => {
+    const text = commentInput.value.trim();
     if (!text) return;
-    item.comments = Array.isArray(item.comments) ? item.comments : [];
-    const comment = { user: currentUser() || 'Korisnik', text, ts: Date.now() };
-    item.comments.push(comment);
-    addCommentRow(comment);
-    commentInput.value = '';
-    await saveGalleryItem(item, false);
+    commentBtn.disabled = true;
+    try {
+      const res = await fetchJson(API_BASE + '/gallery/' + encodeURIComponent(item.id) + '/comments', {
+        method: 'POST',
+        body: JSON.stringify({ text })
+      });
+      addCommentRow(res.comment);
+      commentInput.value = '';
+    } catch (err) {
+      alert('Komentar nije objavljen: ' + err.message);
+    } finally {
+      commentBtn.disabled = false;
+    }
+  };
+  commentBtn.addEventListener('click', sendComment);
+  commentInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); sendComment(); }
   });
   commentWrap.append(commentInput, commentBtn);
 
@@ -452,11 +743,14 @@ async function renderGallery() {
   try {
     const items = await withLoader(() => fetchJson(API_BASE + '/gallery'));
     feed.innerHTML = '';
-    if (!Array.isArray(items) || !items.length) {
+    const visible = (Array.isArray(items) ? items : []).filter(item => item.hasImage);
+    if (!visible.length) {
       feed.appendChild(h('div', 'gallery-empty', 'Još nema slika u galeriji.'));
+      galleryItems = [];
       return;
     }
-    items.forEach(item => feed.appendChild(buildGalleryCard(item)));
+    galleryItems = visible.map(item => ({ src: galleryImageUrl(item.id), caption: item.description || '' }));
+    visible.forEach((item, index) => feed.appendChild(buildGalleryCard(item, index)));
   } catch (err) {
     feed.innerHTML = '';
     feed.appendChild(h('div', 'gallery-empty', 'Nije moguće učitati galeriju. ' + err.message));
@@ -464,12 +758,136 @@ async function renderGallery() {
 }
 
 // ---------------------------------------------------------------------------
-// Chat
+// Chat (kao na Instagramu: novo se vidi odmah, lista uvijek ide na kraj)
 // ---------------------------------------------------------------------------
-function startChatRefresh() {
-  stopChatRefresh();
-  renderChat(true);
-  chatTimer = setInterval(() => renderChat(false), 4000);
+const chatState = { ids: new Set(), lastTs: 0, lastMsgTs: 0, lastSender: '', lastDay: '', loaded: false, loading: false, polling: false, stick: true };
+
+function dayKey(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function dayLabel(ts) {
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (dayKey(ts) === dayKey(Date.now())) return 'Danas';
+  if (dayKey(ts) === dayKey(yesterday.getTime())) return 'Jučer';
+  return formatDate(ts);
+}
+
+function chatNearBottom() {
+  const list = $('chatMessages');
+  return !list || list.scrollHeight - list.scrollTop - list.clientHeight < 120;
+}
+
+function chatScrollToBottom() {
+  const list = $('chatMessages');
+  if (!list) return;
+  list.scrollTop = list.scrollHeight;
+  chatState.stick = true;
+  if ($('chatJump')) $('chatJump').hidden = true;
+}
+
+function resetChatState() {
+  chatState.ids.clear();
+  Object.assign(chatState, { lastTs: 0, lastMsgTs: 0, lastSender: '', lastDay: '', loaded: false, loading: false, polling: false, stick: true });
+  if ($('chatMessages')) $('chatMessages').innerHTML = '';
+  if ($('chatJump')) $('chatJump').hidden = true;
+}
+
+function appendChatMessage(msg, opts = {}) {
+  const list = $('chatMessages');
+  if (!list) return null;
+  const empty = list.querySelector('.chat-empty');
+  if (empty) empty.remove();
+
+  const mine = String(msg.sender || '').toLowerCase() === currentUser().toLowerCase();
+
+  const day = dayKey(msg.ts);
+  if (day !== chatState.lastDay) {
+    list.appendChild(h('li', 'chat-day', dayLabel(msg.ts)));
+    chatState.lastDay = day;
+    chatState.lastSender = '';
+  }
+  const grouped = chatState.lastSender === msg.sender && (msg.ts - chatState.lastMsgTs) < 5 * 60 * 1000;
+  chatState.lastSender = msg.sender;
+  chatState.lastMsgTs = msg.ts;
+
+  const li = h('li', 'chat-message' + (mine ? ' own-message' : '') + (grouped ? ' grouped' : '') + (opts.pending ? ' pending' : ''));
+  li.dataset.id = msg.id;
+
+  if (!mine) {
+    const identity = h('div', 'chat-identity');
+    const avatar = h('div', 'chat-avatar' + (grouped ? ' ghost' : ''));
+    if (!grouped) fillAvatar(avatar, msg.sender || '?');
+    identity.appendChild(avatar);
+    li.appendChild(identity);
+  }
+
+  const body = h('div', 'chat-body');
+  if (!mine && !grouped) body.appendChild(h('div', 'meta', msg.sender));
+  if (msg.text) body.appendChild(h('div', 'msg', msg.text));
+
+  const src = opts.localImage || (msg.hasImage ? API_BASE + '/chat/' + encodeURIComponent(msg.id) + '/image' : '');
+  if (src) {
+    const img = document.createElement('img');
+    img.className = 'chat-message-image';
+    img.alt = 'Slika u poruci';
+    img.src = src;
+    img.addEventListener('load', () => { if (chatState.stick) chatScrollToBottom(); });
+    img.addEventListener('click', () => openLightbox([{ src, caption: msg.text || '' }], 0));
+    body.appendChild(img);
+  }
+  body.appendChild(h('div', 'chat-time', formatTime(msg.ts)));
+  li.appendChild(body);
+  list.appendChild(li);
+  return li;
+}
+
+function ingestChat(messages, forceScroll) {
+  const wasNear = chatNearBottom();
+  let added = 0;
+  let addedMine = false;
+  const me = currentUser().toLowerCase();
+  const list = $('chatMessages');
+
+  messages.forEach(msg => {
+    chatState.lastTs = Math.max(chatState.lastTs, Number(msg.ts) || 0);
+    if (chatState.ids.has(msg.id)) {
+      // poruka koju smo mi poslali: potvrdi je (sklanja "šalje se")
+      const li = [...list.children].find(node => node.dataset && node.dataset.id === msg.id);
+      if (li && li.classList.contains('pending')) {
+        li.classList.remove('pending');
+        const foot = li.querySelector('.chat-time');
+        if (foot) foot.textContent = formatTime(msg.ts);
+      }
+      return;
+    }
+    chatState.ids.add(msg.id);
+    appendChatMessage(msg);
+    added++;
+    if (String(msg.sender || '').toLowerCase() === me) addedMine = true;
+  });
+
+  if (!added) return;
+  if (forceScroll || wasNear || addedMine) {
+    chatScrollToBottom();
+  } else if ($('chatJump')) {
+    $('chatJump').hidden = false;
+  }
+}
+
+async function pollChat() {
+  if (chatState.polling || !chatState.loaded || currentView !== 'chat' || document.hidden) return;
+  chatState.polling = true;
+  try {
+    const messages = await fetchJson(API_BASE + '/chat?since=' + chatState.lastTs);
+    if (Array.isArray(messages)) ingestChat(messages, false);
+  } catch (err) {
+    console.error('Osvježavanje chata nije uspjelo:', err);
+  } finally {
+    chatState.polling = false;
+  }
 }
 
 function stopChatRefresh() {
@@ -479,52 +897,67 @@ function stopChatRefresh() {
   }
 }
 
-async function renderChat(showSpinner = false) {
-  const container = $('chatMessages');
-  if (!container || currentView !== 'chat') return;
-  try {
-    const messages = showSpinner
-      ? await withLoader(() => fetchJson(API_BASE + '/chat'))
-      : await fetchJson(API_BASE + '/chat');
-    const signature = messages.map(m => m.id).join(',');
-    if (signature === lastChatSignature) return;
-    lastChatSignature = signature;
+async function startChatRefresh() {
+  stopChatRefresh();
+  const list = $('chatMessages');
+  if (!list) return;
 
-    container.innerHTML = '';
-    if (!messages.length) {
-      container.appendChild(h('li', 'chat-empty', 'Još nema poruka. Budite prvi!'));
+  if (!chatState.loaded) {
+    if (chatState.loading) return;
+    chatState.loading = true;
+    try {
+      const messages = await withLoader(() => fetchJson(API_BASE + '/chat'));
+      resetChatState();
+      chatState.loading = true;
+      if (!messages.length) list.appendChild(h('li', 'chat-empty', 'Još nema poruka. Budite prvi!'));
+      ingestChat(messages, true);
+      chatState.loaded = true;
+      requestAnimationFrame(chatScrollToBottom);
+    } catch (err) {
+      list.innerHTML = '';
+      list.appendChild(h('li', 'chat-empty', 'Nije moguće učitati chat. ' + err.message));
+      chatState.loading = false;
       return;
     }
-
-    const me = currentUser().toLowerCase();
-    messages.forEach(msg => {
-      const mine = String(msg.sender || '').toLowerCase() === me;
-      const li = h('li', 'chat-message' + (mine ? ' own-message' : ''));
-
-      const identity = h('div', 'chat-identity');
-      const avatar = h('div', 'chat-avatar');
-      fillAvatar(avatar, msg.sender || '?');
-      identity.appendChild(avatar);
-
-      const content = document.createElement('div');
-      content.appendChild(h('div', 'meta', `${msg.sender} · ${formatRelativeTime(msg.ts)}`));
-      if (msg.text) content.appendChild(h('div', 'msg', msg.text));
-      if (msg.hasImage) {
-        const img = document.createElement('img');
-        img.className = 'chat-message-image';
-        img.alt = 'Slika u poruci';
-        img.loading = 'lazy';
-        img.src = API_BASE + '/chat/' + encodeURIComponent(msg.id) + '/image';
-        content.appendChild(img);
-      }
-
-      li.append(identity, content);
-      container.appendChild(li);
-    });
-    container.scrollTop = container.scrollHeight;
-  } catch (err) {
-    console.error('Greška pri učitavanju poruka:', err);
+    chatState.loading = false;
+  } else {
+    chatScrollToBottom();
+    pollChat();
   }
+  if (currentView === 'chat') chatTimer = setInterval(pollChat, 2000);
+}
+
+async function deliverChat(payload, li) {
+  li.classList.remove('failed');
+  li.classList.add('pending');
+  const old = li.querySelector('.chat-status');
+  if (old) old.remove();
+  try {
+    const res = await fetchJson(API_BASE + '/chat', { method: 'POST', body: JSON.stringify(payload) });
+    li.classList.remove('pending');
+    const foot = li.querySelector('.chat-time');
+    if (foot && res.ts) foot.textContent = formatTime(res.ts);
+  } catch (err) {
+    li.classList.remove('pending');
+    li.classList.add('failed');
+    const status = h('div', 'chat-status', 'Nije poslano · dodirnite za ponovni pokušaj');
+    li.querySelector('.chat-body').appendChild(status);
+    li.onclick = () => {
+      li.onclick = null;
+      deliverChat(payload, li);
+    };
+  }
+}
+
+function sendChat(text, image) {
+  const id = 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  chatState.ids.add(id);
+  const li = appendChatMessage(
+    { id, sender: currentUser(), text, hasImage: !!image, ts: Date.now() },
+    { pending: true, localImage: image }
+  );
+  chatScrollToBottom();
+  if (li) deliverChat({ id, sender: currentUser(), text, image }, li);
 }
 
 function initChat() {
@@ -532,18 +965,49 @@ function initChat() {
   const textEl = $('chatMessage');
   const imageEl = $('chatImage');
   const hint = $('chatImageHint');
-  const defaultHint = hint ? hint.textContent : '';
+  const list = $('chatMessages');
   if (!form) return;
 
-  if (imageEl && hint) {
-    imageEl.addEventListener('change', () => {
-      hint.textContent = imageEl.files[0]
-        ? `Slika odabrana: ${imageEl.files[0].name}. Kliknite „Pošalji“.`
-        : defaultHint;
+  let pendingImage = '';
+
+  const clearImage = () => {
+    pendingImage = '';
+    if (imageEl) imageEl.value = '';
+    if (hint) {
+      hint.hidden = true;
+      hint.textContent = '';
+    }
+  };
+
+  const autoGrow = () => {
+    if (!textEl) return;
+    textEl.style.height = 'auto';
+    textEl.style.height = Math.min(textEl.scrollHeight, 120) + 'px';
+  };
+
+  if (imageEl) {
+    imageEl.addEventListener('change', async () => {
+      const file = imageEl.files[0];
+      if (!file) return clearImage();
+      try {
+        pendingImage = await fileToResizedDataUrl(file, 1024, 'image/jpeg', 0.8);
+      } catch (err) {
+        alert(err.message);
+        return clearImage();
+      }
+      if (hint) {
+        hint.textContent = '';
+        hint.hidden = false;
+        const remove = h('button', 'chat-hint-remove', 'Ukloni');
+        remove.type = 'button';
+        remove.addEventListener('click', clearImage);
+        hint.append(document.createTextNode('📷 Slika spremna: ' + file.name + ' '), remove);
+      }
     });
   }
 
   if (textEl) {
+    textEl.addEventListener('input', autoGrow);
     textEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -552,32 +1016,31 @@ function initChat() {
     });
   }
 
-  form.addEventListener('submit', async (e) => {
+  form.addEventListener('submit', (e) => {
     e.preventDefault();
     if (!currentUser()) return;
     const text = (textEl ? textEl.value : '').trim();
-    const file = imageEl && imageEl.files[0];
-    if (!text && !file) return;
-
-    const submitBtn = form.querySelector('button[type="submit"]');
-    if (submitBtn) submitBtn.disabled = true;
-    try {
-      let image = '';
-      if (file) image = await fileToResizedDataUrl(file, 1024, 'image/jpeg', 0.8);
-      await fetchJson(API_BASE + '/chat', {
-        method: 'POST',
-        body: JSON.stringify({ sender: currentUser(), text, image, ts: Date.now() })
-      });
-      if (textEl) textEl.value = '';
-      if (imageEl) imageEl.value = '';
-      if (hint) hint.textContent = defaultHint;
-      lastChatSignature = '';
-      renderChat();
-    } catch (err) {
-      alert('Nije moguće poslati poruku: ' + err.message);
-    } finally {
-      if (submitBtn) submitBtn.disabled = false;
+    const image = pendingImage;
+    if (!text && !image) return;
+    sendChat(text, image);
+    if (textEl) {
+      textEl.value = '';
+      autoGrow();
+      textEl.focus();
     }
+    clearImage();
+  });
+
+  if (list) {
+    list.addEventListener('scroll', () => {
+      chatState.stick = chatNearBottom();
+      if (chatState.stick && $('chatJump')) $('chatJump').hidden = true;
+    });
+  }
+  if ($('chatJump')) $('chatJump').addEventListener('click', chatScrollToBottom);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && currentView === 'chat') pollChat();
   });
 }
 
@@ -1864,37 +2327,45 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   if ($('clearBtn')) $('clearBtn').addEventListener('click', () => { if ($('message')) $('message').value = ''; });
 
-  // Galerija (admin)
+  // Galerija (admin): moze se odabrati vise slika odjednom
   const galForm = $('galleryForm');
   if (galForm) {
     galForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       if (!isAdmin()) return;
-      const file = $('galleryImage').files[0];
-      if (!file) return;
+      const files = [...$('galleryImage').files];
+      if (!files.length) return;
+      const description = ($('galleryDescription').value || '').trim();
       const btn = galForm.querySelector('button[type="submit"]');
       if (btn) btn.disabled = true;
+
+      const base = Date.now();
+      let saved = 0;
+      showLoader(true, `Spremanje slike 1/${files.length}...`);
       try {
-        const image = await fileToResizedDataUrl(file, 1280, 'image/jpeg', 0.82);
-        await fetchJson(API_BASE + '/gallery', {
-          method: 'POST',
-          body: JSON.stringify({
-            id: 'gal_' + Date.now(),
-            image,
-            description: ($('galleryDescription').value || '').trim(),
-            author: currentUser(),
-            ts: Date.now(),
-            likes: 0,
-            dislikes: 0,
-            comments: []
-          })
-        });
+        for (let i = 0; i < files.length; i++) {
+          if ($('globalLoaderText')) $('globalLoaderText').textContent = `Spremanje slike ${i + 1}/${files.length}...`;
+          const image = await fileToResizedDataUrl(files[i], 1600, 'image/jpeg', 0.85);
+          await fetchJson(API_BASE + '/gallery', {
+            method: 'POST',
+            body: JSON.stringify({
+              id: 'gal_' + base + '_' + i,
+              image,
+              description,
+              author: currentUser(),
+              // prva odabrana slika je na vrhu
+              ts: base + (files.length - i)
+            })
+          });
+          saved++;
+        }
+      } catch (err) {
+        alert(`Spremljeno slika: ${saved} od ${files.length}. Greška: ${err.message}`);
+      } finally {
+        showLoader(false);
+        if (btn) btn.disabled = false;
         galForm.reset();
         renderGallery();
-      } catch (err) {
-        alert('Slika nije objavljena: ' + err.message);
-      } finally {
-        if (btn) btn.disabled = false;
       }
     });
   }

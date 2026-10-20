@@ -4,6 +4,7 @@ import time
 import logging
 import base64
 import binascii
+import uuid
 from urllib.parse import unquote
 import psycopg
 from psycopg.rows import dict_row
@@ -18,7 +19,7 @@ log = logging.getLogger("server")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USERNAME = "admin"
-SERVER_VERSION = "2026-10-18-players"
+SERVER_VERSION = "2026-10-19-gallery-chat"
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +173,8 @@ def init_db():
                 comments TEXT
             )
         """, ["id", "image", "description", "author", "ts", "likes", "dislikes", "comments"])
+        db_execute(conn, "ALTER TABLE gallery ADD COLUMN IF NOT EXISTS reactions TEXT")
+        conn.commit()
 
         # Utakmice (nove tabele; imena club_* ne smetaju starim 'matches' / 'teams')
         db_execute(conn, """
@@ -392,6 +395,55 @@ UPSERT_MATCH_SQL = """
 """
 
 
+def load_json(raw, default):
+    try:
+        value = json.loads(raw) if raw else default
+    except (TypeError, ValueError):
+        return default
+    return value if isinstance(value, type(default)) else default
+
+
+def normalize_comments(raw):
+    out = []
+    for i, c in enumerate(load_json(raw, [])):
+        if not isinstance(c, dict):
+            continue
+        out.append({
+            "id": str(c.get("id") or f"legacy_{i}"),
+            "user": str(c.get("user") or "Korisnik"),
+            "text": str(c.get("text") or ""),
+            "ts": to_int_or_none(c.get("ts")) or 0,
+        })
+    return out
+
+
+def reaction_summary(raw, user):
+    reactions = load_json(raw, {})
+    likes = sum(1 for v in reactions.values() if v == "like")
+    dislikes = sum(1 for v in reactions.values() if v == "dislike")
+    mine = reactions.get(user.lower(), "") if user else ""
+    return likes, dislikes, mine
+
+
+def user_exists(conn, username):
+    if not username:
+        return False
+    row = db_fetchone(conn, "SELECT username FROM users WHERE LOWER(username) = LOWER(%s)", (username,))
+    return bool(row)
+
+
+def image_response(data_url):
+    try:
+        header, b64 = data_url.split(",", 1)
+        mimetype = header[5:].split(";")[0] or "image/jpeg"
+        data = base64.b64decode(b64)
+    except (ValueError, binascii.Error):
+        return jsonify({"ok": False, "error": "Bad image"}), 500
+    resp = Response(data, mimetype=mimetype)
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # Basic / health routes
 # ---------------------------------------------------------------------------
@@ -531,61 +583,177 @@ def delete_announcement(item_id):
 # Gallery
 # ---------------------------------------------------------------------------
 
-@app.route('/api/gallery', methods=['GET', 'POST'])
-def handle_gallery():
+@app.route('/api/gallery', methods=['GET'])
+def get_gallery():
+    """Metadata only: images are loaded separately (and cached) via /api/gallery/<id>/image."""
+    user = request_user()
     conn = get_db_connection()
     try:
-        if request.method == 'POST':
-            payload = request.get_json(silent=True) or {}
-            item_id = str(payload.get("id") or f"gal_{int(time.time()*1000)}")
-            image = str(payload.get("image") or "")
-            description = str(payload.get("description") or "")
-            author = str(payload.get("author") or "Admin")
-            ts = int(payload.get("ts") or time.time()*1000)
-            likes = int(payload.get("likes") or 0)
-            dislikes = int(payload.get("dislikes") or 0)
-            comments = json.dumps(payload.get("comments") or [])
-
-            exists = db_fetchone(conn, "SELECT id FROM gallery WHERE id = %s", (item_id,))
-            if not exists and not is_admin_request():
-                return jsonify({"ok": False, "error": "Admin access required"}), 403
-
-            db_execute(
-                conn,
-                """
-                INSERT INTO gallery (id, image, description, author, ts, likes, dislikes, comments)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET
-                    likes = EXCLUDED.likes,
-                    dislikes = EXCLUDED.dislikes,
-                    comments = EXCLUDED.comments
-                """,
-                (item_id, image, description, author, ts, likes, dislikes, comments)
-            )
-            conn.commit()
-            return jsonify({"ok": True})
-
-        rows = db_fetchall(conn, "SELECT id, image, description, author, ts, likes, dislikes, comments FROM gallery ORDER BY ts DESC")
+        rows = db_fetchall(
+            conn,
+            """
+            SELECT id, description, author, ts, reactions, comments,
+                   (image IS NOT NULL AND image <> '') AS has_image
+            FROM gallery
+            ORDER BY ts DESC
+            """
+        )
         result = []
         for r in rows:
+            likes, dislikes, mine = reaction_summary(r["reactions"], user)
             result.append({
                 "id": r["id"],
-                "image": r["image"],
-                "description": r["description"],
-                "author": r["author"],
+                "description": r["description"] or "",
+                "author": r["author"] or "Admin",
                 "ts": r["ts"],
-                "likes": r["likes"],
-                "dislikes": r["dislikes"],
-                "comments": json.loads(r["comments"]) if r["comments"] else []
+                "hasImage": bool(r["has_image"]),
+                "likes": likes,
+                "dislikes": dislikes,
+                "myReaction": mine,
+                "comments": normalize_comments(r["comments"]),
             })
         return jsonify(result)
     finally:
         conn.close()
 
 
-# ---------------------------------------------------------------------------
-# Chat
-# ---------------------------------------------------------------------------
+@app.route('/api/gallery', methods=['POST'])
+def create_gallery_item():
+    denied = admin_required()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True) or {}
+    item_id = str(payload.get("id") or f"gal_{int(time.time()*1000)}")[:64]
+    image = str(payload.get("image") or "")
+    description = str(payload.get("description") or "").strip()[:500]
+    author = str(payload.get("author") or "Admin")[:60]
+    ts = to_int_or_none(payload.get("ts")) or int(time.time() * 1000)
+
+    if not image.startswith("data:image/") or len(image) > 3_500_000:
+        return jsonify({"ok": False, "error": "Invalid or too large image."}), 400
+
+    conn = get_db_connection()
+    try:
+        db_execute(
+            conn,
+            """
+            INSERT INTO gallery (id, image, description, author, ts, likes, dislikes, comments, reactions)
+            VALUES (%s, %s, %s, %s, %s, 0, 0, '[]', '{}')
+            ON CONFLICT (id) DO UPDATE SET description = EXCLUDED.description
+            """,
+            (item_id, image, description, author, ts)
+        )
+        conn.commit()
+        return jsonify({"ok": True, "id": item_id})
+    finally:
+        conn.close()
+
+
+@app.route('/api/gallery/<item_id>', methods=['DELETE'])
+def delete_gallery_item(item_id):
+    denied = admin_required()
+    if denied:
+        return denied
+    conn = get_db_connection()
+    try:
+        db_execute(conn, "DELETE FROM gallery WHERE id = %s", (item_id,))
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
+@app.route('/api/gallery/<item_id>/image', methods=['GET'])
+def gallery_image(item_id):
+    conn = get_db_connection()
+    try:
+        row = db_fetchone(conn, "SELECT image FROM gallery WHERE id = %s", (item_id,))
+    finally:
+        conn.close()
+    if not row or not row["image"]:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    return image_response(row["image"])
+
+
+@app.route('/api/gallery/<item_id>/react', methods=['POST'])
+def react_gallery_item(item_id):
+    """One reaction per user per image. value: 'like', 'dislike' or '' (remove)."""
+    user = request_user()
+    value = str((request.get_json(silent=True) or {}).get("value") or "")
+    conn = get_db_connection()
+    try:
+        if not user_exists(conn, user):
+            return jsonify({"ok": False, "error": "Prijavite se da biste reagovali."}), 403
+        row = db_fetchone(conn, "SELECT reactions FROM gallery WHERE id = %s FOR UPDATE", (item_id,))
+        if not row:
+            return jsonify({"ok": False, "error": "Slika nije pronađena."}), 404
+        reactions = load_json(row["reactions"], {})
+        if value in ("like", "dislike"):
+            reactions[user.lower()] = value
+        else:
+            reactions.pop(user.lower(), None)
+        raw = json.dumps(reactions, ensure_ascii=False)
+        db_execute(conn, "UPDATE gallery SET reactions = %s WHERE id = %s", (raw, item_id))
+        conn.commit()
+        likes, dislikes, mine = reaction_summary(raw, user)
+        return jsonify({"ok": True, "likes": likes, "dislikes": dislikes, "myReaction": mine})
+    finally:
+        conn.close()
+
+
+@app.route('/api/gallery/<item_id>/comments', methods=['POST'])
+def add_gallery_comment(item_id):
+    user = request_user()
+    text = str((request.get_json(silent=True) or {}).get("text") or "").strip()[:300]
+    if not text:
+        return jsonify({"ok": False, "error": "Komentar ne može biti prazan."}), 400
+    conn = get_db_connection()
+    try:
+        if not user_exists(conn, user):
+            return jsonify({"ok": False, "error": "Prijavite se da biste komentarisali."}), 403
+        row = db_fetchone(conn, "SELECT comments FROM gallery WHERE id = %s FOR UPDATE", (item_id,))
+        if not row:
+            return jsonify({"ok": False, "error": "Slika nije pronađena."}), 404
+        comments = normalize_comments(row["comments"])
+        if len(comments) >= 500:
+            return jsonify({"ok": False, "error": "Previše komentara."}), 400
+        comment = {
+            "id": f"c_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}",
+            "user": user,
+            "text": text,
+            "ts": int(time.time() * 1000),
+        }
+        comments.append(comment)
+        db_execute(conn, "UPDATE gallery SET comments = %s WHERE id = %s",
+                   (json.dumps(comments, ensure_ascii=False), item_id))
+        conn.commit()
+        return jsonify({"ok": True, "comment": comment})
+    finally:
+        conn.close()
+
+
+@app.route('/api/gallery/<item_id>/comments/<comment_id>', methods=['DELETE'])
+def delete_gallery_comment(item_id, comment_id):
+    user = request_user()
+    conn = get_db_connection()
+    try:
+        row = db_fetchone(conn, "SELECT comments FROM gallery WHERE id = %s FOR UPDATE", (item_id,))
+        if not row:
+            return jsonify({"ok": False, "error": "Slika nije pronađena."}), 404
+        comments = normalize_comments(row["comments"])
+        target = next((c for c in comments if c["id"] == comment_id), None)
+        if not target:
+            return jsonify({"ok": True})
+        if not (is_admin_request() or (user and target["user"].lower() == user.lower())):
+            return jsonify({"ok": False, "error": "Not allowed"}), 403
+        comments = [c for c in comments if c["id"] != comment_id]
+        db_execute(conn, "UPDATE gallery SET comments = %s WHERE id = %s",
+                   (json.dumps(comments, ensure_ascii=False), item_id))
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
 
 @app.route('/api/chat', methods=['GET', 'POST'])
 def handle_chat():
@@ -593,39 +761,59 @@ def handle_chat():
     try:
         if request.method == 'POST':
             payload = request.get_json(silent=True) or {}
-            msg_id = str(payload.get("id") or f"msg_{int(time.time()*1000)}")
-            sender = str(payload.get("sender") or "Anonimno")
-            text = str(payload.get("text") or "").strip()
+            msg_id = str(payload.get("id") or f"msg_{int(time.time()*1000)}")[:64]
+            sender = (request_user() or str(payload.get("sender") or "Anonimno")).strip()[:60]
+            text = str(payload.get("text") or "").strip()[:1000]
             image = str(payload.get("image") or "")
-            ts = int(payload.get("ts") or time.time()*1000)
-
-            if image and not image.startswith("data:image/"):
+            if image and (not image.startswith("data:image/") or len(image) > 3_500_000):
                 image = ""
             if not text and not image:
                 return jsonify({"ok": False, "error": "Poruka ne može biti prazna."}), 400
 
+            # Vrijeme postavlja server (satovi korisnika se razlikuju). Ponovni pokusaj ne pravi duplikat.
+            now = int(time.time() * 1000)
             db_execute(
                 conn,
-                "INSERT INTO chat_messages (id, sender, text, image, ts) VALUES (%s, %s, %s, %s, %s)",
-                (msg_id, sender, text, image or None, ts)
+                """
+                INSERT INTO chat_messages (id, sender, text, image, ts)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                (msg_id, sender, text, image or None, now)
             )
+            row = db_fetchone(conn, "SELECT ts FROM chat_messages WHERE id = %s", (msg_id,))
             conn.commit()
-            return jsonify({"ok": True})
+            return jsonify({"ok": True, "id": msg_id, "ts": row["ts"] if row else now})
 
-        # zadnjih 100 poruka, od starijih prema novijim (slike se ne šalju ovdje)
-        rows = db_fetchall(
-            conn,
-            """
-            SELECT id, sender, text, ts, (image IS NOT NULL AND image <> '') AS has_image
-            FROM (
-                SELECT id, sender, text, image, ts
+        since = to_int_or_none(request.args.get("since"))
+        if since is not None:
+            # samo novije poruke (brzo osvjezavanje)
+            rows = db_fetchall(
+                conn,
+                """
+                SELECT id, sender, text, ts, (image IS NOT NULL AND image <> '') AS has_image
                 FROM chat_messages
-                ORDER BY ts DESC
-                LIMIT 100
-            ) latest
-            ORDER BY ts ASC
-            """
-        )
+                WHERE ts >= %s
+                ORDER BY ts ASC, id ASC
+                LIMIT 200
+                """,
+                (since,)
+            )
+        else:
+            # zadnjih 100 poruka, od starijih prema novijim (slike se ne šalju ovdje)
+            rows = db_fetchall(
+                conn,
+                """
+                SELECT id, sender, text, ts, (image IS NOT NULL AND image <> '') AS has_image
+                FROM (
+                    SELECT id, sender, text, image, ts
+                    FROM chat_messages
+                    ORDER BY ts DESC
+                    LIMIT 100
+                ) latest
+                ORDER BY ts ASC, id ASC
+                """
+            )
         return jsonify([
             {
                 "id": r["id"],

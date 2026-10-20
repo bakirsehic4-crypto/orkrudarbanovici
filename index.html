@@ -5,7 +5,7 @@
 		<meta name="viewport" content="width=device-width,initial-scale=1" />
 		<title>ORK Rudar Banovići</title>
 		<link rel="icon" type="image/png" href="logo.png" />
-		<link rel="stylesheet" href="style.css?v=7" />
+		<link rel="stylesheet" href="style.css?v=8" />
 	</head>
 	<body>
 		<div id="globalLoader" class="global-loader" aria-live="polite" aria-busy="false" hidden>
@@ -90,28 +90,32 @@
 					<div class="section-heading">
 						<div>
 							<h2>Chat</h2>
-							<p class="muted">Talk with everyone in the club.</p>
+							<p class="muted">Razgovarajte sa svima u klubu.</p>
 						</div>
 					</div>
+					<div class="chat-window">
+						<ul id="chatMessages" class="chat-messages"></ul>
+						<button type="button" id="chatJump" class="chat-jump" hidden>&darr; Nove poruke</button>
+					</div>
+					<div id="chatImageHint" class="chat-image-hint" hidden></div>
 					<form id="chatForm" class="chat-form">
-						<textarea id="chatMessage" placeholder="Napišite poruku..." rows="2" maxlength="1000"></textarea>
-						<label class="chat-image-label" for="chatImage">Slika</label>
+						<label class="chat-image-label" for="chatImage" title="Dodaj sliku">&#128247;</label>
 						<input id="chatImage" type="file" accept="image/*" hidden />
+						<textarea id="chatMessage" placeholder="Napišite poruku..." rows="1" maxlength="1000"></textarea>
 						<button type="submit" class="btn">Pošalji</button>
 					</form>
-					<div id="chatImageHint" class="chat-image-hint">Prvo odaberite sliku, pa kliknite „Pošalji“.</div>
-					<ul id="chatMessages" class="chat-messages"></ul>
 				</section>
 			</section>
 
 			<section id="viewGallery" class="view-panel">
 				<div class="gallery-shell">
 					<div id="galleryAdminBlock" class="gallery-admin-panel">
-						<h2>Nova slika u galeriji</h2>
+						<h2>Nove slike u galeriji</h2>
 						<form id="galleryForm" class="gallery-form">
-							<input id="galleryImage" type="file" accept="image/*" required />
-							<textarea id="galleryDescription" rows="3" placeholder="Dodajte opis slike..."></textarea>
-							<button type="submit" class="btn">Objavi sliku</button>
+							<input id="galleryImage" type="file" accept="image/*" multiple required />
+							<div class="gallery-hint">Možete odabrati više slika odjednom (držite Ctrl ili Shift).</div>
+							<textarea id="galleryDescription" rows="3" placeholder="Opis (isti opis ide uz sve odabrane slike)..."></textarea>
+							<button type="submit" class="btn">Objavi slike</button>
 						</form>
 					</div>
 					<div id="galleryFeed" class="gallery-feed"></div>
@@ -251,7 +255,7 @@
 			</section>
 		</main>
 
-		<script src="script.js?v=7"></script>
+		<script src="script.js?v=8"></script>
 	</body>
 </html>
 
