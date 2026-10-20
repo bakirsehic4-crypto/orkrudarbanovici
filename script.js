@@ -120,17 +120,26 @@ async function withLoader(task, text = 'Podaci se učitavaju...') {
 }
 
 async function fetchJson(url, options = {}) {
+  const method = String(options.method || 'GET').toUpperCase();
   let res;
   try {
-    res = await fetch(url, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        // encodeURIComponent: imena sa č, ć, š, đ, ž inače ruše fetch
-        'X-Club-User': encodeURIComponent(currentUser()),
-        ...(options.headers || {})
-      }
-    });
+    if (method === 'GET') {
+      // Obični GET bez posebnih zaglavlja: preglednik ne šalje dodatni OPTIONS upit (brže).
+      // Ime korisnika ide kao ?u=
+      const user = currentUser();
+      const target = user ? url + (url.includes('?') ? '&' : '?') + 'u=' + encodeURIComponent(user) : url;
+      res = await fetch(target, options);
+    } else {
+      res = await fetch(url, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          // encodeURIComponent: imena sa č, ć, š, đ, ž inače ruše fetch
+          'X-Club-User': encodeURIComponent(currentUser()),
+          ...(options.headers || {})
+        }
+      });
+    }
   } catch (e) {
     throw new Error('Server nije dostupan. Provjerite internet vezu ili pokušajte ponovo za minutu.');
   }
@@ -194,12 +203,17 @@ function updateHeaderAvatar() {
   if (wrap) wrap.classList.toggle('has-image', !!myAvatar);
 }
 
+// Slika profila se šalje kao obična slika (preglednik je pamti), ne kao dugačak tekst
+function avatarUrl(name, version) {
+  return API_BASE + '/avatar?name=' + encodeURIComponent(name) + '&v=' + (version || 0);
+}
+
 function fetchAvatar(name) {
   const key = name.toLowerCase();
   if (key in avatarCache) return Promise.resolve(avatarCache[key]);
   if (!avatarPending[key]) {
     avatarPending[key] = fetchJson(API_BASE + '/users/' + encodeURIComponent(name))
-      .then(r => { avatarCache[key] = r.avatar || ''; return avatarCache[key]; })
+      .then(r => { avatarCache[key] = r.hasAvatar ? avatarUrl(r.username || name, r.avatarV) : ''; return avatarCache[key]; })
       .catch(() => { avatarCache[key] = ''; return ''; });
   }
   return avatarPending[key];
@@ -216,12 +230,12 @@ function fillAvatar(el, name) {
 async function saveAvatar(dataUrl) {
   const user = currentUser();
   if (!user) return;
-  await fetchJson(API_BASE + '/users/' + encodeURIComponent(user) + '/avatar', {
+  const res = await fetchJson(API_BASE + '/users/' + encodeURIComponent(user) + '/avatar', {
     method: 'PUT',
     body: JSON.stringify({ avatar: dataUrl })
   });
-  myAvatar = dataUrl;
-  avatarCache[user.toLowerCase()] = dataUrl;
+  myAvatar = dataUrl ? avatarUrl(user, res.v) : '';
+  avatarCache[user.toLowerCase()] = myAvatar;
   updateHeaderAvatar();
 }
 
@@ -265,7 +279,7 @@ function applyRoleUi() {
 
 async function onLoggedIn(user) {
   setCurrentUser(user.username);
-  myAvatar = user.profileImage || '';
+  myAvatar = user.hasAvatar ? avatarUrl(user.username, user.avatarV) : '';
   avatarCache[user.username.toLowerCase()] = myAvatar;
   lockApp(false);
   updateHeaderAvatar();

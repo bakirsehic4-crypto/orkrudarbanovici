@@ -2,3 +2,4 @@ Flask==3.0.3
 flask-cors
 psycopg[binary]==3.2.10
 gunicorn
+psycopg-pool>=3.2

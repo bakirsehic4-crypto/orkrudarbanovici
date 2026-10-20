@@ -5,6 +5,7 @@ import logging
 import base64
 import binascii
 import uuid
+import threading
 from urllib.parse import unquote
 import psycopg
 from psycopg.rows import dict_row
@@ -12,23 +13,85 @@ from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, max_age=86400)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("server")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USERNAME = "admin"
-SERVER_VERSION = "2026-10-19-gallery-chat"
+SERVER_VERSION = "2026-10-20-speed"
 
 
 # ---------------------------------------------------------------------------
 # Database helpers
 # ---------------------------------------------------------------------------
 
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:  # biblioteka nije instalirana -> radi kao prije
+    ConnectionPool = None
+
+_pool = None
+_pool_failed = False
+_pool_lock = threading.Lock()
+
+
+def get_pool():
+    """One shared pool of ready database connections (saves 100-500 ms per request)."""
+    global _pool, _pool_failed
+    if _pool is not None or _pool_failed or ConnectionPool is None:
+        return _pool
+    with _pool_lock:
+        if _pool is None and not _pool_failed:
+            try:
+                pool = ConnectionPool(
+                    DATABASE_URL,
+                    min_size=1,
+                    max_size=6,
+                    kwargs={"row_factory": dict_row, "prepare_threshold": None, "connect_timeout": 10},
+                    check=ConnectionPool.check_connection,
+                    max_idle=240,
+                    max_lifetime=1500,
+                    open=False,
+                )
+                pool.open()
+                _pool = pool
+                log.info("Pool veza s bazom je pokrenut.")
+            except Exception as exc:  # noqa: BLE001
+                _pool_failed = True
+                log.error("Pool veza nije moguc, koristim obicne veze: %s", exc)
+    return _pool
+
+
+class PooledConnection:
+    """Looks like a normal connection; close() hands it back to the pool."""
+
+    def __init__(self, pool, conn):
+        self._pool = pool
+        self._conn = conn
+
+    def cursor(self, *args, **kwargs):
+        return self._conn.cursor(*args, **kwargs)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        if self._conn is not None:
+            conn, self._conn = self._conn, None
+            self._pool.putconn(conn)
+
+
 def get_db_connection():
     if not DATABASE_URL:
         raise ValueError("DATABASE_URL nije postavljen u environment varijablama!")
+    pool = get_pool()
+    if pool is not None:
+        return PooledConnection(pool, pool.getconn(timeout=15))
     # prepare_threshold=None -> works with Supabase pooler (pgbouncer) too
     return psycopg.connect(
         DATABASE_URL,
@@ -116,6 +179,7 @@ def init_db():
         """)
         db_execute(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'user'")
         db_execute(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_image TEXT")
+        db_execute(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_v BIGINT DEFAULT 0")
         conn.commit()
         user_cols = table_columns(conn, "users")
         if "avatar" in user_cols:
@@ -266,7 +330,9 @@ def is_admin_request():
 
 
 def request_user():
-    return unquote(request.headers.get("X-Club-User", "")).strip()
+    # Obicni GET zahtjevi salju ime kao ?u= (bez posebnog zaglavlja = bez dodatnog OPTIONS upita)
+    header = unquote(request.headers.get("X-Club-User", "")).strip()
+    return header or str(request.args.get("u", "")).strip()
 
 
 def admin_required():
@@ -483,14 +549,24 @@ def login():
 
     conn = get_db_connection()
     try:
-        user = db_fetchone(conn, "SELECT * FROM users WHERE LOWER(username) = LOWER(%s)", (username,))
+        user = db_fetchone(
+            conn,
+            """
+            SELECT username, password, role,
+                   (profile_image IS NOT NULL AND profile_image <> '') AS has_avatar,
+                   COALESCE(avatar_v, 0) AS avatar_v
+            FROM users WHERE LOWER(username) = LOWER(%s)
+            """,
+            (username,)
+        )
         if user and user["password"] == password:
             return jsonify({
                 "ok": True,
                 "user": {
                     "username": user["username"],
                     "role": user["role"],
-                    "profileImage": user["profile_image"] or ""
+                    "hasAvatar": bool(user["has_avatar"]),
+                    "avatarV": user["avatar_v"]
                 }
             })
         return jsonify({"ok": False, "error": "Neispravno korisničko ime ili lozinka."}), 401
@@ -984,18 +1060,48 @@ def save_teams():
 
 @app.route('/api/users/<username>', methods=['GET'])
 def get_user(username):
+    """Small JSON only. The picture itself is served (and cached) by /api/avatar."""
     conn = get_db_connection()
     try:
         row = db_fetchone(
             conn,
-            "SELECT username, profile_image FROM users WHERE LOWER(username) = LOWER(%s)",
+            """
+            SELECT username,
+                   (profile_image IS NOT NULL AND profile_image <> '') AS has_avatar,
+                   COALESCE(avatar_v, 0) AS avatar_v
+            FROM users WHERE LOWER(username) = LOWER(%s)
+            """,
             (username,)
         )
         if not row:
             return jsonify({"ok": False, "error": "User not found"}), 404
-        return jsonify({"ok": True, "username": row["username"], "avatar": row["profile_image"] or ""})
+        return jsonify({
+            "ok": True,
+            "username": row["username"],
+            "hasAvatar": bool(row["has_avatar"]),
+            "avatarV": row["avatar_v"],
+        })
     finally:
         conn.close()
+
+
+@app.route('/api/avatar', methods=['GET'])
+def get_avatar():
+    name = str(request.args.get("name", "")).strip()
+    conn = get_db_connection()
+    try:
+        row = db_fetchone(
+            conn,
+            "SELECT profile_image FROM users WHERE LOWER(username) = LOWER(%s)",
+            (name,)
+        )
+    finally:
+        conn.close()
+    image = row["profile_image"] if row else ""
+    if not image or not image.startswith("data:"):
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    # ?v= se mijenja kad korisnik promijeni sliku, pa preglednik smije dugo pamtiti sliku
+    return image_response(image)
 
 
 @app.route('/api/users/<username>/avatar', methods=['PUT'])
@@ -1007,119 +1113,22 @@ def update_avatar(username):
     avatar = str(data.get("avatar") or "").strip()
     if avatar and not avatar.startswith("data:image/"):
         return jsonify({"ok": False, "error": "Invalid image"}), 400
+    if len(avatar) > 1_500_000:
+        return jsonify({"ok": False, "error": "Image is too large."}), 400
 
+    version = int(time.time() * 1000)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE users SET profile_image = %s WHERE LOWER(username) = LOWER(%s)",
-                (avatar or None, username)
+                "UPDATE users SET profile_image = %s, avatar_v = %s WHERE LOWER(username) = LOWER(%s)",
+                (avatar or None, version, username)
             )
             updated = cur.rowcount
         conn.commit()
         if updated == 0:
             return jsonify({"ok": False, "error": "User not found"}), 404
-        return jsonify({"ok": True})
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Player photos (optional, admin only to change)
-# ---------------------------------------------------------------------------
-
-def player_key(name):
-    return " ".join(str(name or "").split()).lower()
-
-
-@app.route('/api/players', methods=['GET'])
-def list_players():
-    """Only metadata (no photo data) so the list stays small and fast."""
-    conn = get_db_connection()
-    try:
-        rows = db_fetchall(
-            conn,
-            "SELECT name_key, name, (photo IS NOT NULL AND photo <> '') AS has_photo, updated FROM club_players"
-        )
-        return jsonify({
-            r["name_key"]: {"name": r["name"], "hasPhoto": bool(r["has_photo"]), "updated": r["updated"]}
-            for r in rows
-        })
-    finally:
-        conn.close()
-
-
-@app.route('/api/players/photo', methods=['GET'])
-def get_player_photo():
-    key = player_key(request.args.get("name"))
-    conn = get_db_connection()
-    try:
-        row = db_fetchone(conn, "SELECT photo FROM club_players WHERE name_key = %s", (key,))
-    finally:
-        conn.close()
-    if not row or not row["photo"]:
-        return jsonify({"ok": False, "error": "Not found"}), 404
-    try:
-        header, b64 = row["photo"].split(",", 1)
-        mimetype = header[5:].split(";")[0] or "image/jpeg"
-        data = base64.b64decode(b64)
-    except (ValueError, binascii.Error):
-        return jsonify({"ok": False, "error": "Bad image"}), 500
-    resp = Response(data, mimetype=mimetype)
-    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-    return resp
-
-
-@app.route('/api/players/photo', methods=['POST'])
-def set_player_photo():
-    denied = admin_required()
-    if denied:
-        return denied
-    data = request.get_json(silent=True) or {}
-    name = clean_text(" ".join(str(data.get("name") or "").split()), 80)
-    photo = str(data.get("photo") or "")
-    if not name:
-        return jsonify({"ok": False, "error": "Player name is required."}), 400
-    if not photo.startswith("data:image/"):
-        return jsonify({"ok": False, "error": "Invalid image."}), 400
-    if len(photo) > 2_500_000:
-        return jsonify({"ok": False, "error": "Image is too large."}), 400
-
-    conn = get_db_connection()
-    try:
-        db_execute(
-            conn,
-            """
-            INSERT INTO club_players (name_key, name, photo, updated)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (name_key) DO UPDATE SET
-                name = EXCLUDED.name,
-                photo = EXCLUDED.photo,
-                updated = EXCLUDED.updated
-            """,
-            (player_key(name), name, photo, int(time.time() * 1000))
-        )
-        conn.commit()
-        return jsonify({"ok": True})
-    finally:
-        conn.close()
-
-
-@app.route('/api/players/photo', methods=['DELETE'])
-def delete_player_photo():
-    denied = admin_required()
-    if denied:
-        return denied
-    key = player_key(request.args.get("name"))
-    conn = get_db_connection()
-    try:
-        db_execute(
-            conn,
-            "UPDATE club_players SET photo = NULL, updated = %s WHERE name_key = %s",
-            (int(time.time() * 1000), key)
-        )
-        conn.commit()
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "v": version})
     finally:
         conn.close()
 
