@@ -8,6 +8,7 @@ import uuid
 import threading
 import io
 import urllib.request
+import urllib.error
 from urllib.parse import unquote
 import psycopg
 from psycopg.rows import dict_row
@@ -58,7 +59,14 @@ def send_push_async(heading, message):
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
-                log.info("OneSignal push poslan (status %s)", resp.status)
+                raw = resp.read().decode("utf-8", "replace")[:400]
+                log.info("OneSignal push poslan (status %s): %s", resp.status, raw)
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:400]
+            except Exception:  # noqa: BLE001
+                detail = ""
+            log.warning("OneSignal push nije poslan: HTTP %s %s", exc.code, detail)
         except Exception as exc:  # noqa: BLE001
             log.warning("OneSignal push nije poslan: %s", exc)
 
