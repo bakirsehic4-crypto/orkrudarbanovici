@@ -12,6 +12,7 @@ import psycopg
 from psycopg.rows import dict_row
 from flask import Flask, request, jsonify, Response, send_file
 from flask_cors import CORS
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 CORS(app, max_age=86400)
@@ -21,6 +22,7 @@ log = logging.getLogger("server")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USERNAME = "admin"
+HASH_PREFIXES = ("scrypt:", "pbkdf2:")
 SERVER_VERSION = "2026-10-21-voice-reply"
 
 
@@ -565,7 +567,22 @@ def login():
             """,
             (username,)
         )
-        if user and user["password"] == password:
+        ok = False
+        if user:
+            stored = user["password"] or ""
+            if stored.startswith(HASH_PREFIXES):
+                ok = check_password_hash(stored, password)
+            else:
+                # Stara lozinka u obicnom tekstu: provjeri, pa je odmah pretvori u hash
+                ok = (stored == password)
+                if ok:
+                    db_execute(
+                        conn,
+                        "UPDATE users SET password = %s WHERE LOWER(username) = LOWER(%s)",
+                        (generate_password_hash(password), username)
+                    )
+                    conn.commit()
+        if ok:
             return jsonify({
                 "ok": True,
                 "user": {
@@ -599,7 +616,7 @@ def register():
         db_execute(
             conn,
             "INSERT INTO users (username, password, role, profile_image) VALUES (%s, %s, %s, %s)",
-            (username, password, 'user', profile_image)
+            (username, generate_password_hash(password), 'user', profile_image)
         )
         conn.commit()
         return jsonify({"ok": True})
