@@ -6,6 +6,9 @@ const SESSION_USER_KEY = 'club_session_user';
 const CLUB_NAME = 'ORK Rudar Banovići';
 const CLUB_BADGE = 'rudar.png';
 
+const PLAYER_POSITIONS = ['Golman', 'Lijevo krilo', 'Desno krilo', 'Lijevi vanjski', 'Srednji vanjski', 'Desni vanjski', 'Pivot'];
+const PLAYER_GENERATIONS = ['2010/11', '2012/13', '2014/15', 'Mini Rukomet'];
+
 const $ = (id) => document.getElementById(id);
 
 // ---------------------------------------------------------------------------
@@ -290,6 +293,7 @@ async function onLoggedIn(user) {
 function logOut() {
   setCurrentUser('');
   myAvatar = '';
+  if (rec.active) stopRecording(false);
   stopChatRefresh();
   resetChatState();
   closeMenu();
@@ -329,6 +333,7 @@ function showView(name) {
   });
   closeMenu();
 
+  if (name !== 'chat' && typeof rec !== 'undefined' && rec.active) stopRecording(false);
   if (name === 'chat') startChatRefresh(); else stopChatRefresh();
   if (name === 'announcements') renderAnnouncements();
   if (name === 'gallery') renderGallery();
@@ -774,7 +779,7 @@ async function renderGallery() {
 // ---------------------------------------------------------------------------
 // Chat (kao na Instagramu: novo se vidi odmah, lista uvijek ide na kraj)
 // ---------------------------------------------------------------------------
-const chatState = { ids: new Set(), lastTs: 0, lastMsgTs: 0, lastSender: '', lastDay: '', loaded: false, loading: false, polling: false, stick: true };
+const chatState = { ids: new Set(), lastTs: 0, lastMsgTs: 0, lastSender: '', lastDay: '', loaded: false, loading: false, polling: false, stick: true, reply: null };
 
 function dayKey(ts) {
   const d = new Date(ts);
@@ -804,9 +809,113 @@ function chatScrollToBottom() {
 
 function resetChatState() {
   chatState.ids.clear();
-  Object.assign(chatState, { lastTs: 0, lastMsgTs: 0, lastSender: '', lastDay: '', loaded: false, loading: false, polling: false, stick: true });
+  Object.assign(chatState, { lastTs: 0, lastMsgTs: 0, lastSender: '', lastDay: '', loaded: false, loading: false, polling: false, stick: true, reply: null });
+  renderReplyBar();
   if ($('chatMessages')) $('chatMessages').innerHTML = '';
   if ($('chatJump')) $('chatJump').hidden = true;
+}
+
+let currentVoice = null;
+
+function formatDuration(ms) {
+  const total = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  return `${Math.floor(total / 60)}:${pad2(total % 60)}`;
+}
+
+// Kratak opis poruke za citat / traku "Odgovor za ..."
+function chatMessageLabel(msg) {
+  if (msg.hasAudio) return '🎤 Glasovna poruka';
+  if (msg.text) return msg.text.length > 80 ? msg.text.slice(0, 80) + '…' : msg.text;
+  if (msg.hasImage) return '📷 Slika';
+  return '';
+}
+
+function chatReplyLabel(reply) {
+  if (reply.kind === 'voice') return '🎤 Glasovna poruka';
+  if (reply.kind === 'image') return '📷 Slika';
+  const text = String(reply.text || '');
+  return text.length > 80 ? text.slice(0, 80) + '…' : text;
+}
+
+function scrollToChatMessage(id) {
+  const list = $('chatMessages');
+  const li = list && [...list.children].find(node => node.dataset && node.dataset.id === id);
+  if (!li) return;
+  li.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  li.classList.add('flash');
+  setTimeout(() => li.classList.remove('flash'), 1600);
+}
+
+function renderReplyBar() {
+  const bar = $('chatReplyBar');
+  if (!bar) return;
+  const reply = chatState.reply;
+  bar.innerHTML = '';
+  bar.hidden = !reply;
+  if (!reply) return;
+  const text = h('div', 'chat-reply-text');
+  text.append(h('strong', '', 'Odgovor za ' + reply.sender), h('span', '', reply.preview));
+  const close = h('button', 'chat-hint-remove', '×');
+  close.type = 'button';
+  close.title = 'Odustani od odgovora';
+  close.addEventListener('click', clearChatReply);
+  bar.append(text, close);
+}
+
+function setChatReply(info) {
+  chatState.reply = info;
+  renderReplyBar();
+  if ($('chatMessage')) $('chatMessage').focus();
+}
+
+function clearChatReply() {
+  chatState.reply = null;
+  renderReplyBar();
+}
+
+// Glasovna poruka: ▶ / ⏸, traka napretka (može se kliknuti za premotavanje) i trajanje
+function buildVoicePlayer(src, durationMs) {
+  const wrap = h('div', 'voice-player');
+  const btn = h('button', 'voice-btn', '▶');
+  btn.type = 'button';
+  btn.setAttribute('aria-label', 'Pusti glasovnu poruku');
+  const track = h('div', 'voice-track');
+  const fill = h('div', 'voice-fill');
+  track.appendChild(fill);
+  const time = h('span', 'voice-time', formatDuration(durationMs));
+  wrap.append(btn, track, time);
+
+  const audio = new Audio();
+  audio.preload = 'none';
+  audio.src = src;
+  const total = () => (isFinite(audio.duration) && audio.duration > 0 ? audio.duration : (durationMs || 0) / 1000);
+
+  audio.addEventListener('play', () => { btn.textContent = '⏸'; });
+  audio.addEventListener('pause', () => { btn.textContent = '▶'; });
+  audio.addEventListener('ended', () => {
+    btn.textContent = '▶';
+    fill.style.width = '0%';
+    time.textContent = formatDuration(durationMs);
+  });
+  audio.addEventListener('timeupdate', () => {
+    const t = total();
+    if (t > 0) fill.style.width = Math.min(100, (audio.currentTime / t) * 100) + '%';
+    time.textContent = formatDuration(audio.currentTime * 1000);
+  });
+  audio.addEventListener('error', () => { time.textContent = '⚠'; });
+
+  btn.addEventListener('click', () => {
+    if (!audio.paused) { audio.pause(); return; }
+    if (currentVoice && currentVoice !== audio) currentVoice.pause();
+    currentVoice = audio;
+    audio.play().catch(() => alert('Ova glasovna poruka se ne može reproducirati na ovom uređaju.'));
+  });
+  track.addEventListener('click', (e) => {
+    const rect = track.getBoundingClientRect();
+    const t = total();
+    if (rect.width && t) audio.currentTime = ((e.clientX - rect.left) / rect.width) * t;
+  });
+  return wrap;
 }
 
 function appendChatMessage(msg, opts = {}) {
@@ -840,7 +949,23 @@ function appendChatMessage(msg, opts = {}) {
 
   const body = h('div', 'chat-body');
   if (!mine && !grouped) body.appendChild(h('div', 'meta', msg.sender));
+
+  if (msg.reply) {
+    const quote = h('div', 'chat-quote');
+    quote.append(h('strong', '', msg.reply.sender), h('span', '', chatReplyLabel(msg.reply)));
+    quote.title = 'Idi na poruku';
+    quote.addEventListener('click', () => scrollToChatMessage(msg.reply.id));
+    body.appendChild(quote);
+  }
+
   if (msg.text) body.appendChild(h('div', 'msg', msg.text));
+
+  const audioSrc = opts.localAudio || (msg.hasAudio ? API_BASE + '/chat/' + encodeURIComponent(msg.id) + '/audio' : '');
+  if (audioSrc) {
+    const bubble = h('div', 'msg voice-msg');
+    bubble.appendChild(buildVoicePlayer(audioSrc, msg.audioMs));
+    body.appendChild(bubble);
+  }
 
   const src = opts.localImage || (msg.hasImage ? API_BASE + '/chat/' + encodeURIComponent(msg.id) + '/image' : '');
   if (src) {
@@ -854,6 +979,14 @@ function appendChatMessage(msg, opts = {}) {
   }
   body.appendChild(h('div', 'chat-time', formatTime(msg.ts)));
   li.appendChild(body);
+
+  const replyBtn = h('button', 'chat-reply-btn', '↩');
+  replyBtn.type = 'button';
+  replyBtn.title = 'Odgovori';
+  replyBtn.setAttribute('aria-label', 'Odgovori na poruku');
+  replyBtn.addEventListener('click', () => setChatReply({ id: msg.id, sender: msg.sender, preview: chatMessageLabel(msg) }));
+  li.appendChild(replyBtn);
+
   list.appendChild(li);
   return li;
 }
@@ -963,15 +1096,123 @@ async function deliverChat(payload, li) {
   }
 }
 
-function sendChat(text, image) {
+function sendChat({ text = '', image = '', audio = null }) {
   const id = 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
   chatState.ids.add(id);
+  const reply = chatState.reply
+    ? { id: chatState.reply.id, sender: chatState.reply.sender, text: chatState.reply.preview, kind: 'text' }
+    : null;
   const li = appendChatMessage(
-    { id, sender: currentUser(), text, hasImage: !!image, ts: Date.now() },
-    { pending: true, localImage: image }
+    { id, sender: currentUser(), text, hasImage: !!image, hasAudio: !!audio, audioMs: audio ? audio.ms : 0, ts: Date.now(), reply },
+    { pending: true, localImage: image, localAudio: audio ? audio.localUrl : '' }
   );
   chatScrollToBottom();
-  if (li) deliverChat({ id, sender: currentUser(), text, image }, li);
+  clearChatReply();
+  if (li) {
+    deliverChat({
+      id,
+      sender: currentUser(),
+      text,
+      image,
+      audio: audio ? audio.dataUrl : '',
+      audioMs: audio ? audio.ms : 0,
+      replyTo: reply ? reply.id : ''
+    }, li);
+  }
+}
+
+// ----- glasovne poruke: snimanje -----
+const MAX_VOICE_MS = 60000;
+const rec = { active: false, stream: null, recorder: null, chunks: [], startedAt: 0, timer: null, cancelled: false };
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Snimak nije moguće pročitati.'));
+    reader.onload = () => resolve(reader.result);
+    reader.readAsDataURL(blob);
+  });
+}
+
+function setRecorderUi(recording) {
+  if ($('chatForm')) $('chatForm').hidden = recording;
+  if ($('chatRecorder')) $('chatRecorder').hidden = !recording;
+  if (recording && $('chatRecTime')) $('chatRecTime').textContent = '0:00';
+}
+
+async function startRecording() {
+  if (rec.active) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
+    alert('Ovaj preglednik ne podržava snimanje glasovnih poruka.');
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    alert('Dozvolite pristup mikrofonu u pregledniku da biste snimili glasovnu poruku.');
+    return;
+  }
+  const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']
+    .find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || '';
+  let recorder;
+  try {
+    // 24 kbit/s: razumljiv govor, a ~180 KB za punu minutu
+    recorder = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 24000 } : { audioBitsPerSecond: 24000 });
+  } catch (e) {
+    stream.getTracks().forEach(t => t.stop());
+    alert('Snimanje glasa nije moguće na ovom uređaju.');
+    return;
+  }
+
+  Object.assign(rec, { active: true, stream, recorder, chunks: [], startedAt: Date.now(), cancelled: false });
+  recorder.addEventListener('dataavailable', (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); });
+  recorder.addEventListener('stop', onRecordingStopped);
+  recorder.start();
+  setRecorderUi(true);
+  rec.timer = setInterval(() => {
+    const elapsed = Date.now() - rec.startedAt;
+    if ($('chatRecTime')) $('chatRecTime').textContent = formatDuration(elapsed);
+    if (elapsed >= MAX_VOICE_MS) stopRecording(true);
+  }, 200);
+}
+
+function stopRecording(send) {
+  if (!rec.active) return;
+  rec.cancelled = !send;
+  clearInterval(rec.timer);
+  rec.timer = null;
+  try { rec.recorder.stop(); } catch (e) { onRecordingStopped(); }
+}
+
+async function onRecordingStopped() {
+  if (!rec.active) return;
+  const ms = Date.now() - rec.startedAt;
+  const { cancelled, chunks, recorder, stream } = rec;
+  rec.active = false;
+  clearInterval(rec.timer);
+  rec.timer = null;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  setRecorderUi(false);
+  if (cancelled) return;
+  if (ms < 700 || !chunks.length) {
+    alert('Glasovna poruka je prekratka.');
+    return;
+  }
+  const type = (chunks[0] && chunks[0].type) || (recorder && recorder.mimeType) || 'audio/webm';
+  const blob = new Blob(chunks, { type });
+  let dataUrl;
+  try {
+    dataUrl = await blobToDataUrl(blob);
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+  if (dataUrl.length > 1400000) {
+    alert('Glasovna poruka je prevelika. Pokušajte snimiti kraću.');
+    return;
+  }
+  sendChat({ audio: { dataUrl, ms: Math.min(ms, MAX_VOICE_MS + 500), localUrl: URL.createObjectURL(blob) } });
 }
 
 function initChat() {
@@ -1026,6 +1267,8 @@ function initChat() {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         form.requestSubmit();
+      } else if (e.key === 'Escape' && chatState.reply) {
+        clearChatReply();
       }
     });
   }
@@ -1036,7 +1279,7 @@ function initChat() {
     const text = (textEl ? textEl.value : '').trim();
     const image = pendingImage;
     if (!text && !image) return;
-    sendChat(text, image);
+    sendChat({ text, image });
     if (textEl) {
       textEl.value = '';
       autoGrow();
@@ -1044,6 +1287,11 @@ function initChat() {
     }
     clearImage();
   });
+
+  // glasovne poruke
+  if ($('chatMic')) $('chatMic').addEventListener('click', startRecording);
+  if ($('chatRecCancel')) $('chatRecCancel').addEventListener('click', () => stopRecording(false));
+  if ($('chatRecSend')) $('chatRecSend').addEventListener('click', () => stopRecording(true));
 
   if (list) {
     list.addEventListener('scroll', () => {
@@ -2027,24 +2275,45 @@ async function loadPlayersMeta() {
   }
 }
 
-async function renderPlayersList() {
-  const box = $('playersList');
-  if (!box) return;
-  let matches;
-  try {
-    matches = await withLoader(() => loadMatches());
-  } catch (err) {
-    box.innerHTML = '';
-    box.appendChild(h('div', 'md-note', 'Nije moguće učitati igrače. ' + err.message));
+let playersData = null;
+let playersGenFilter = '';
+
+function drawPlayersList(box) {
+  const { matches, meta } = playersData;
+  const infoOf = (pl) => meta[pl.key] || {};
+  box.innerHTML = '';
+
+  let players = computePlayerStats(matches);
+  if (!players.length) {
+    box.appendChild(h('div', 'md-note', 'Još nema igrača. Igrači se pojavljuju kad admin upiše spisak igrača u detaljima odigrane utakmice.'));
     return;
   }
 
-  const players = computePlayerStats(matches).sort((a, b) =>
-    b.goals - a.goals || b.played - a.played || a.name.localeCompare(b.name, 'bs'));
-  box.innerHTML = '';
+  // filter po generaciji
+  const filterRow = h('div', 'pl-filter-row');
+  filterRow.appendChild(h('span', 'pl-filter-label', 'Generacija:'));
+  const select = document.createElement('select');
+  select.className = 'pl-filter';
+  [['', 'Sve generacije'], ...PLAYER_GENERATIONS.map(g => [g, g])].forEach(([value, label]) => {
+    const option = h('option', '', label);
+    option.value = value;
+    select.appendChild(option);
+  });
+  select.value = playersGenFilter;
+  select.addEventListener('change', () => {
+    playersGenFilter = select.value;
+    drawPlayersList(box);
+  });
+  filterRow.appendChild(select);
+  box.appendChild(filterRow);
+
+  if (playersGenFilter) {
+    players = players.filter(pl => (infoOf(pl).generations || []).includes(playersGenFilter));
+  }
+  players.sort((a, b) => b.goals - a.goals || b.played - a.played || a.name.localeCompare(b.name, 'bs'));
 
   if (!players.length) {
-    box.appendChild(h('div', 'md-note', 'Još nema igrača. Igrači se pojavljuju kad admin upiše spisak igrača u detaljima odigrane utakmice.'));
+    box.appendChild(h('div', 'md-note', 'Nema igrača za odabranu generaciju. Admin može dodati generaciju na stranici igrača.'));
     return;
   }
 
@@ -2066,7 +2335,11 @@ async function renderPlayersList() {
     row.appendChild(h('span', 'pl-rank', String(index + 1)));
     const nameCell = h('span', 'pl-name-cell');
     if (pl.number) nameCell.appendChild(h('span', 'md-num', pl.number));
-    nameCell.appendChild(h('span', 'pl-name-text', pl.name));
+    const nameBox = h('span', 'pl-name-box');
+    nameBox.appendChild(h('span', 'pl-name-text', pl.name));
+    const positions = infoOf(pl).positions || [];
+    if (positions.length) nameBox.appendChild(h('span', 'pl-sub', positions.join(' · ')));
+    nameCell.appendChild(nameBox);
     row.appendChild(nameCell);
     row.appendChild(h('span', 'pl-cell', String(pl.played)));
     row.appendChild(h('span', 'pl-cell goals', String(pl.goals)));
@@ -2074,6 +2347,20 @@ async function renderPlayersList() {
     row.appendChild(h('span', 'pl-cell', String(pl.susp)));
     box.appendChild(row);
   });
+}
+
+async function renderPlayersList() {
+  const box = $('playersList');
+  if (!box) return;
+  try {
+    const [matches, meta] = await withLoader(() => Promise.all([loadMatches(), loadPlayersMeta()]));
+    playersData = { matches, meta };
+  } catch (err) {
+    box.innerHTML = '';
+    box.appendChild(h('div', 'md-note', 'Nije moguće učitati igrače. ' + err.message));
+    return;
+  }
+  drawPlayersList(box);
 }
 
 function anonymousAvatar() {
@@ -2131,6 +2418,62 @@ function buildPlayerMatchRow(game) {
   return row;
 }
 
+// Admin: pozicije i generacije igrača
+function buildPlayerProfileEditor(pl, metaEntry) {
+  const card = mdCard('UREDI POZICIJE I GENERACIJE (ADMIN)');
+  const body = card.querySelector('.md-card-body');
+  body.classList.add('md-editor');
+
+  const group = (title, options, selected) => {
+    const box = h('div', 'md-section');
+    box.appendChild(h('label', 'md-lab', title));
+    const grid = h('div', 'pl-checks');
+    const all = [...options, ...selected.filter(x => !options.includes(x))];
+    const inputs = all.map(value => {
+      const label = h('label', 'md-check pl-check');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = value;
+      input.checked = selected.includes(value);
+      label.append(input, document.createTextNode(value));
+      grid.appendChild(label);
+      return input;
+    });
+    box.appendChild(grid);
+    body.appendChild(box);
+    return inputs;
+  };
+
+  const posInputs = group('Pozicije (može više)', PLAYER_POSITIONS, (metaEntry && metaEntry.positions) || []);
+  const genInputs = group('Generacije (može više)', PLAYER_GENERATIONS, (metaEntry && metaEntry.generations) || []);
+
+  const actions = h('div', 'md-actions');
+  const save = h('button', 'btn', 'Spremi');
+  save.type = 'button';
+  actions.appendChild(save);
+  body.appendChild(actions);
+
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    try {
+      await withLoader(() => fetchJson(API_BASE + '/players/profile', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: pl.name,
+          positions: posInputs.filter(i => i.checked).map(i => i.value),
+          generations: genInputs.filter(i => i.checked).map(i => i.value)
+        })
+      }), 'Spremanje...');
+      renderPlayerPage();
+    } catch (err) {
+      alert('Nije spremljeno: ' + err.message);
+    } finally {
+      save.disabled = false;
+    }
+  });
+  return card;
+}
+
 async function renderPlayerPage() {
   const body = $('playerBody');
   if (!body) return;
@@ -2160,6 +2503,8 @@ async function renderPlayerPage() {
   const tags = h('div', 'md-tags');
   tags.appendChild(h('span', 'md-tag', CLUB_NAME));
   if (pl.number) tags.appendChild(h('span', 'md-tag', 'Broj ' + pl.number));
+  ((metaEntry && metaEntry.positions) || []).forEach(p => tags.appendChild(h('span', 'md-tag pos', p)));
+  ((metaEntry && metaEntry.generations) || []).forEach(g => tags.appendChild(h('span', 'md-tag gen', g)));
   hero.appendChild(tags);
 
   if (isAdmin()) {
@@ -2229,6 +2574,7 @@ async function renderPlayerPage() {
   const cardBody = card.querySelector('.md-card-body');
   pl.games.forEach(game => cardBody.appendChild(buildPlayerMatchRow(game)));
   body.appendChild(card);
+  if (isAdmin()) body.appendChild(buildPlayerProfileEditor(pl, metaEntry));
 }
 
 // ---------------------------------------------------------------------------

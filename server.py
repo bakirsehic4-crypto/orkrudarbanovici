@@ -6,10 +6,11 @@ import base64
 import binascii
 import uuid
 import threading
+import io
 from urllib.parse import unquote
 import psycopg
 from psycopg.rows import dict_row
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_file
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -20,7 +21,7 @@ log = logging.getLogger("server")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USERNAME = "admin"
-SERVER_VERSION = "2026-10-20-speed"
+SERVER_VERSION = "2026-10-21-voice-reply"
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +215,9 @@ def init_db():
             )
         """, ["id", "sender", "text", "ts"])
         db_execute(conn, "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS image TEXT")
+        db_execute(conn, "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS audio TEXT")
+        db_execute(conn, "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS audio_ms INTEGER")
+        db_execute(conn, "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS reply_to TEXT")
         conn.commit()
         if legacy and "username" in lcols and "message" in lcols and "ts" in lcols:
             image_expr = "image" if "image" in lcols else "NULL"
@@ -272,6 +276,8 @@ def init_db():
                 updated BIGINT NOT NULL DEFAULT 0
             )
         """)
+        db_execute(conn, "ALTER TABLE club_players ADD COLUMN IF NOT EXISTS positions TEXT")
+        db_execute(conn, "ALTER TABLE club_players ADD COLUMN IF NOT EXISTS generations TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -831,6 +837,39 @@ def delete_gallery_comment(item_id, comment_id):
         conn.close()
 
 
+CHAT_SELECT = """
+    SELECT c.id, c.sender, c.text, c.ts,
+           (c.image IS NOT NULL AND c.image <> '') AS has_image,
+           (c.audio IS NOT NULL AND c.audio <> '') AS has_audio,
+           c.audio_ms, c.reply_to,
+           r.sender AS r_sender, LEFT(r.text, 120) AS r_text,
+           (r.image IS NOT NULL AND r.image <> '') AS r_image,
+           (r.audio IS NOT NULL AND r.audio <> '') AS r_audio
+"""
+
+
+def chat_json(r):
+    reply = None
+    if r["reply_to"] and r["r_sender"] is not None:
+        if r["r_audio"]:
+            kind = "voice"
+        elif r["r_image"] and not r["r_text"]:
+            kind = "image"
+        else:
+            kind = "text"
+        reply = {"id": r["reply_to"], "sender": r["r_sender"], "text": r["r_text"] or "", "kind": kind}
+    return {
+        "id": r["id"],
+        "sender": r["sender"],
+        "text": r["text"],
+        "ts": r["ts"],
+        "hasImage": bool(r["has_image"]),
+        "hasAudio": bool(r["has_audio"]),
+        "audioMs": r["audio_ms"] or 0,
+        "reply": reply,
+    }
+
+
 @app.route('/api/chat', methods=['GET', 'POST'])
 def handle_chat():
     conn = get_db_connection()
@@ -843,7 +882,12 @@ def handle_chat():
             image = str(payload.get("image") or "")
             if image and (not image.startswith("data:image/") or len(image) > 3_500_000):
                 image = ""
-            if not text and not image:
+            audio = str(payload.get("audio") or "")
+            if audio and (not audio.startswith("data:audio/") or len(audio) > 1_500_000):
+                return jsonify({"ok": False, "error": "Glasovna poruka je predugačka."}), 400
+            audio_ms = clean_int(payload.get("audioMs"), 0, 120000) if audio else None
+            reply_to = str(payload.get("replyTo") or "")[:64] or None
+            if not text and not image and not audio:
                 return jsonify({"ok": False, "error": "Poruka ne može biti prazna."}), 400
 
             # Vrijeme postavlja server (satovi korisnika se razlikuju). Ponovni pokusaj ne pravi duplikat.
@@ -851,11 +895,11 @@ def handle_chat():
             db_execute(
                 conn,
                 """
-                INSERT INTO chat_messages (id, sender, text, image, ts)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO chat_messages (id, sender, text, image, audio, audio_ms, reply_to, ts)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO NOTHING
                 """,
-                (msg_id, sender, text, image or None, now)
+                (msg_id, sender, text, image or None, audio or None, audio_ms, reply_to, now)
             )
             row = db_fetchone(conn, "SELECT ts FROM chat_messages WHERE id = %s", (msg_id,))
             conn.commit()
@@ -866,42 +910,52 @@ def handle_chat():
             # samo novije poruke (brzo osvjezavanje)
             rows = db_fetchall(
                 conn,
-                """
-                SELECT id, sender, text, ts, (image IS NOT NULL AND image <> '') AS has_image
-                FROM chat_messages
-                WHERE ts >= %s
-                ORDER BY ts ASC, id ASC
+                CHAT_SELECT + """
+                FROM chat_messages c
+                LEFT JOIN chat_messages r ON r.id = c.reply_to
+                WHERE c.ts >= %s
+                ORDER BY c.ts ASC, c.id ASC
                 LIMIT 200
                 """,
                 (since,)
             )
         else:
-            # zadnjih 100 poruka, od starijih prema novijim (slike se ne šalju ovdje)
+            # zadnjih 100 poruka, od starijih prema novijim (slike i zvuk se ne šalju ovdje)
             rows = db_fetchall(
                 conn,
-                """
-                SELECT id, sender, text, ts, (image IS NOT NULL AND image <> '') AS has_image
+                CHAT_SELECT + """
                 FROM (
-                    SELECT id, sender, text, image, ts
+                    SELECT id, sender, text, image, audio, audio_ms, reply_to, ts
                     FROM chat_messages
                     ORDER BY ts DESC
                     LIMIT 100
-                ) latest
-                ORDER BY ts ASC, id ASC
+                ) c
+                LEFT JOIN chat_messages r ON r.id = c.reply_to
+                ORDER BY c.ts ASC, c.id ASC
                 """
             )
-        return jsonify([
-            {
-                "id": r["id"],
-                "sender": r["sender"],
-                "text": r["text"],
-                "ts": r["ts"],
-                "hasImage": bool(r["has_image"]),
-            }
-            for r in rows
-        ])
+        return jsonify([chat_json(r) for r in rows])
     finally:
         conn.close()
+
+
+@app.route('/api/chat/<msg_id>/audio', methods=['GET'])
+def chat_audio(msg_id):
+    """Voice message as a real audio file (supports Range requests, needed by Safari/iOS)."""
+    conn = get_db_connection()
+    try:
+        row = db_fetchone(conn, "SELECT audio FROM chat_messages WHERE id = %s", (msg_id,))
+    finally:
+        conn.close()
+    if not row or not row["audio"]:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    try:
+        header, b64 = row["audio"].split(",", 1)
+        mimetype = header[5:].split(";")[0] or "audio/webm"
+        data = base64.b64decode(b64)
+    except (ValueError, binascii.Error):
+        return jsonify({"ok": False, "error": "Bad audio"}), 500
+    return send_file(io.BytesIO(data), mimetype=mimetype, conditional=True, max_age=31536000)
 
 
 @app.route('/api/chat/<msg_id>/image', methods=['GET'])
@@ -1129,6 +1183,152 @@ def update_avatar(username):
         if updated == 0:
             return jsonify({"ok": False, "error": "User not found"}), 404
         return jsonify({"ok": True, "v": version})
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Players: photo (optional), positions and generations (admin only to change)
+# ---------------------------------------------------------------------------
+
+def player_key(name):
+    return " ".join(str(name or "").split()).lower()
+
+
+def clean_str_list(value, max_items=8, max_len=40):
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value[:max_items]:
+        text = clean_text(item, max_len)
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+@app.route('/api/players', methods=['GET'])
+def list_players():
+    """Only metadata (no photo data) so the list stays small and fast."""
+    conn = get_db_connection()
+    try:
+        rows = db_fetchall(
+            conn,
+            """
+            SELECT name_key, name, (photo IS NOT NULL AND photo <> '') AS has_photo, updated,
+                   positions, generations
+            FROM club_players
+            """
+        )
+        return jsonify({
+            r["name_key"]: {
+                "name": r["name"],
+                "hasPhoto": bool(r["has_photo"]),
+                "updated": r["updated"],
+                "positions": load_json(r["positions"], []),
+                "generations": load_json(r["generations"], []),
+            }
+            for r in rows
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/players/photo', methods=['GET'])
+def get_player_photo():
+    key = player_key(request.args.get("name"))
+    conn = get_db_connection()
+    try:
+        row = db_fetchone(conn, "SELECT photo FROM club_players WHERE name_key = %s", (key,))
+    finally:
+        conn.close()
+    if not row or not row["photo"]:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    return image_response(row["photo"])
+
+
+@app.route('/api/players/photo', methods=['POST'])
+def set_player_photo():
+    denied = admin_required()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    name = clean_text(" ".join(str(data.get("name") or "").split()), 80)
+    photo = str(data.get("photo") or "")
+    if not name:
+        return jsonify({"ok": False, "error": "Player name is required."}), 400
+    if not photo.startswith("data:image/"):
+        return jsonify({"ok": False, "error": "Invalid image."}), 400
+    if len(photo) > 2_500_000:
+        return jsonify({"ok": False, "error": "Image is too large."}), 400
+
+    conn = get_db_connection()
+    try:
+        db_execute(
+            conn,
+            """
+            INSERT INTO club_players (name_key, name, photo, updated)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (name_key) DO UPDATE SET
+                name = EXCLUDED.name,
+                photo = EXCLUDED.photo,
+                updated = EXCLUDED.updated
+            """,
+            (player_key(name), name, photo, int(time.time() * 1000))
+        )
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
+@app.route('/api/players/photo', methods=['DELETE'])
+def delete_player_photo():
+    denied = admin_required()
+    if denied:
+        return denied
+    key = player_key(request.args.get("name"))
+    conn = get_db_connection()
+    try:
+        db_execute(
+            conn,
+            "UPDATE club_players SET photo = NULL, updated = %s WHERE name_key = %s",
+            (int(time.time() * 1000), key)
+        )
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
+@app.route('/api/players/profile', methods=['POST'])
+def set_player_profile():
+    """Admin: which positions a player plays and for which generations."""
+    denied = admin_required()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    name = clean_text(" ".join(str(data.get("name") or "").split()), 80)
+    if not name:
+        return jsonify({"ok": False, "error": "Player name is required."}), 400
+    positions = json.dumps(clean_str_list(data.get("positions")), ensure_ascii=False)
+    generations = json.dumps(clean_str_list(data.get("generations")), ensure_ascii=False)
+
+    conn = get_db_connection()
+    try:
+        db_execute(
+            conn,
+            """
+            INSERT INTO club_players (name_key, name, photo, updated, positions, generations)
+            VALUES (%s, %s, NULL, 0, %s, %s)
+            ON CONFLICT (name_key) DO UPDATE SET
+                name = EXCLUDED.name,
+                positions = EXCLUDED.positions,
+                generations = EXCLUDED.generations
+            """,
+            (player_key(name), name, positions, generations)
+        )
+        conn.commit()
+        return jsonify({"ok": True})
     finally:
         conn.close()
 

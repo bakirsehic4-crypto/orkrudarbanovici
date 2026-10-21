@@ -5,7 +5,7 @@
 		<meta name="viewport" content="width=device-width,initial-scale=1" />
 		<title>ORK Rudar Banovići</title>
 		<link rel="icon" type="image/png" href="logo.png" />
-		<link rel="stylesheet" href="style.css?v=8" />
+		<link rel="stylesheet" href="style.css?v=9" />
 	</head>
 	<body>
 		<div id="globalLoader" class="global-loader" aria-live="polite" aria-busy="false" hidden>
@@ -98,9 +98,18 @@
 						<button type="button" id="chatJump" class="chat-jump" hidden>&darr; Nove poruke</button>
 					</div>
 					<div id="chatImageHint" class="chat-image-hint" hidden></div>
+					<div id="chatReplyBar" class="chat-reply-bar" hidden></div>
+					<div id="chatRecorder" class="chat-recorder" hidden>
+						<span class="rec-dot"></span>
+						<span id="chatRecTime" class="rec-time">0:00</span>
+						<span class="rec-hint">Snimanje glasovne poruke...</span>
+						<button type="button" id="chatRecCancel" class="btn secondary small">Odustani</button>
+						<button type="button" id="chatRecSend" class="btn small">Pošalji</button>
+					</div>
 					<form id="chatForm" class="chat-form">
 						<label class="chat-image-label" for="chatImage" title="Dodaj sliku">&#128247;</label>
 						<input id="chatImage" type="file" accept="image/*" hidden />
+						<button type="button" id="chatMic" class="chat-image-label chat-mic" title="Glasovna poruka" aria-label="Snimi glasovnu poruku">&#127908;</button>
 						<textarea id="chatMessage" placeholder="Napišite poruku..." rows="1" maxlength="1000"></textarea>
 						<button type="submit" class="btn">Pošalji</button>
 					</form>
@@ -255,7 +264,7 @@
 			</section>
 		</main>
 
-		<script src="script.js?v=8"></script>
+		<script src="script.js?v=9"></script>
 	</body>
 </html>
 
