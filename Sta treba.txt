@@ -1,0 +1,4 @@
+Dodati reply funkciju u chatu
+Pokusati da sajt bude kao neka aplikacija na telefonu ( do pola zavrseno)
+dodati ko igra za koju generaciju kod igraci
+

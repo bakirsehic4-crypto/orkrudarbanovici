@@ -6,6 +6,33 @@
 		<title>ORK Rudar Banovići</title>
 		<link rel="icon" type="image/png" href="logo.png" />
 		<link rel="stylesheet" href="style.css?v=9" />
+		<!-- PWA -->
+		<link rel="manifest" href="manifest.webmanifest" />
+		<meta name="theme-color" content="#07130d" />
+		<meta name="mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-title" content="ORK Rudar" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+		<link rel="apple-touch-icon" href="icon-192.png" />
+		<!-- OneSignal (push obavijesti) -->
+		<script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+		<script>
+			// Zalijepite svoj OneSignal App ID (OneSignal > Settings > Keys & IDs)
+			window.ONESIGNAL_APP_ID = "PASTE_YOUR_ONESIGNAL_APP_ID";
+			window.OneSignalDeferred = window.OneSignalDeferred || [];
+			if (window.ONESIGNAL_APP_ID.indexOf("PASTE") !== 0) {
+				window.OneSignalDeferred.push(async function (OneSignal) {
+					// Folder u kojem je stranica (npr. "/orkrudarbanovici/" na GitHub Pages, "/" na vlastitoj domeni)
+					var base = window.location.pathname.replace(/[^\/]*$/, "");
+					await OneSignal.init({
+						appId: window.ONESIGNAL_APP_ID,
+						serviceWorkerPath: base.slice(1) + "OneSignalSDKWorker.js",
+						serviceWorkerParam: { scope: base },
+						notifyButton: { enable: false }
+					});
+				});
+			}
+		</script>
 	</head>
 	<body>
 		<div id="globalLoader" class="global-loader" aria-live="polite" aria-busy="false" hidden>
@@ -54,6 +81,7 @@
 					</button>
 					<div id="menuList" class="menu-list" role="menu">
 						<button class="menu-item" id="announcementsBtn">Obavijesti</button>
+						<button class="menu-item" id="notifBtn">Uključi notifikacije</button>
 						<button class="menu-item" id="chatBtn">Chat</button>
 						<button class="menu-item" id="galleryBtn">Galerija</button>
 						<button class="menu-item" id="terminiBtn">Termini</button>
@@ -264,7 +292,7 @@
 			</section>
 		</main>
 
-		<script src="script.js?v=9"></script>
+		<script src="script.js?v=10"></script>
 	</body>
 </html>
 

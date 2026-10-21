@@ -7,6 +7,7 @@ import binascii
 import uuid
 import threading
 import io
+import urllib.request
 from urllib.parse import unquote
 import psycopg
 from psycopg.rows import dict_row
@@ -23,6 +24,45 @@ log = logging.getLogger("server")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USERNAME = "admin"
 HASH_PREFIXES = ("scrypt:", "pbkdf2:")
+
+# OneSignal push obavijesti (postavite u environment varijablama na hostingu)
+CLUB_NAME_PUSH = "ORK Rudar Banovići"
+ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID", "").strip()
+ONESIGNAL_API_KEY = os.getenv("ONESIGNAL_API_KEY", "").strip()
+SITE_URL = os.getenv("SITE_URL", "").strip()  # npr. https://vas-sajt.com (otvara se klikom na notifikaciju)
+
+
+def send_push_async(heading, message):
+    """Salje push svim pretplacenim korisnicima. Radi u pozadini; greska nikad ne rusi server."""
+    if not ONESIGNAL_APP_ID or not ONESIGNAL_API_KEY:
+        return
+
+    def _send():
+        try:
+            body = {
+                "app_id": ONESIGNAL_APP_ID,
+                "target_channel": "push",
+                "included_segments": ["Subscribed Users"],
+                "headings": {"en": heading[:80]},
+                "contents": {"en": message[:200]},
+            }
+            if SITE_URL:
+                body["url"] = SITE_URL
+            req = urllib.request.Request(
+                "https://api.onesignal.com/notifications",
+                data=json.dumps(body).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json; charset=utf-8",
+                    "Authorization": "Key " + ONESIGNAL_API_KEY,
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                log.info("OneSignal push poslan (status %s)", resp.status)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("OneSignal push nije poslan: %s", exc)
+
+    threading.Thread(target=_send, daemon=True).start()
 SERVER_VERSION = "2026-10-21-voice-reply"
 
 
@@ -644,6 +684,8 @@ def handle_announcements():
             author = str(payload.get("author") or "Admin")
             ts = int(payload.get("ts") or time.time()*1000)
 
+            already = db_fetchone(conn, "SELECT 1 AS x FROM announcements WHERE id = %s", (item_id,))
+
             db_execute(
                 conn,
                 """
@@ -656,6 +698,8 @@ def handle_announcements():
                 (item_id, title, content, author, ts)
             )
             conn.commit()
+            if not already:
+                send_push_async(title or CLUB_NAME_PUSH, content)
             return jsonify({"ok": True})
 
         rows = db_fetchall(conn, "SELECT id, title, content, author, ts FROM announcements ORDER BY ts DESC")

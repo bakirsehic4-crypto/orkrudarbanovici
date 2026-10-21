@@ -290,6 +290,39 @@ async function onLoggedIn(user) {
   showView('announcements');
 }
 
+// Push notifikacije (OneSignal). Na iPhone-u rade samo kad je sajt dodan na početni ekran.
+function enablePushNotifications() {
+  closeMenu();
+  const appId = window.ONESIGNAL_APP_ID || '';
+  if (!appId || appId.indexOf('PASTE') === 0) {
+    alert('Notifikacije još nisu podešene na sajtu.');
+    return;
+  }
+  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  if (isIos && !standalone) {
+    alert('Na iPhone-u prvo dodajte sajt na početni ekran (Dijeli > Dodaj na početni ekran), otvorite ga odatle pa ponovo odaberite "Uključi notifikacije".');
+    return;
+  }
+  if (!('Notification' in window)) {
+    alert('Ovaj preglednik ne podržava notifikacije.');
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    alert('Notifikacije su blokirane. Dozvolite ih u postavkama preglednika/telefona za ovaj sajt.');
+    return;
+  }
+  window.OneSignalDeferred = window.OneSignalDeferred || [];
+  window.OneSignalDeferred.push(async function (OneSignal) {
+    try {
+      await OneSignal.Notifications.requestPermission();
+      if (OneSignal.Notifications.permission) alert('Notifikacije su uključene.');
+    } catch (e) {
+      alert('Notifikacije nije moguće uključiti: ' + (e && e.message ? e.message : e));
+    }
+  });
+}
+
 function logOut() {
   setCurrentUser('');
   myAvatar = '';
@@ -2639,6 +2672,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btn) btn.addEventListener('click', () => showView(nav[id]));
   });
   if ($('logoutBtn')) $('logoutBtn').addEventListener('click', logOut);
+  if ($('notifBtn')) $('notifBtn').addEventListener('click', enablePushNotifications);
 
   // Avatar
   const avatar = $('avatar');

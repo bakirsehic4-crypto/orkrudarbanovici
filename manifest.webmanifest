@@ -1,0 +1,17 @@
+{
+  "name": "ORK Rudar Banovići",
+  "short_name": "ORK Rudar",
+  "description": "Obavijesti, chat, galerija, termini i utakmice ORK Rudar Banovići",
+  "lang": "bs",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#07130d",
+  "theme_color": "#07130d",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
