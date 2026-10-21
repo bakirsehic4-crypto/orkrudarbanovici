@@ -43,7 +43,7 @@ def send_push_async(heading, message):
             body = {
                 "app_id": ONESIGNAL_APP_ID,
                 "target_channel": "push",
-                "included_segments": ["Subscribed Users"],
+                "included_segments": ["Total Subscriptions"],
                 "headings": {"en": heading[:80]},
                 "contents": {"en": message[:200]},
             }
