@@ -316,7 +316,22 @@ function enablePushNotifications() {
   window.OneSignalDeferred.push(async function (OneSignal) {
     try {
       await OneSignal.Notifications.requestPermission();
-      if (OneSignal.Notifications.permission) alert('Notifikacije su uključene.');
+      if (!OneSignal.Notifications.permission) {
+        alert('Dozvola za notifikacije nije data.');
+        return;
+      }
+      try { await OneSignal.User.PushSubscription.optIn(); } catch (e) { /* ignore */ }
+      // sačekaj da OneSignal napravi pretplatu (do 8 s)
+      let subId = OneSignal.User.PushSubscription.id;
+      for (let i = 0; i < 16 && !subId; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        subId = OneSignal.User.PushSubscription.id;
+      }
+      if (subId) {
+        alert('Notifikacije su uključene.');
+      } else {
+        alert('Dozvola je data, ali OneSignal nije napravio pretplatu. Provjerite Site URL u OneSignal postavkama i da je OneSignalSDKWorker.js dostupan na sajtu.' + (window.ONESIGNAL_INIT_ERROR ? '\n\nGreška: ' + window.ONESIGNAL_INIT_ERROR : ''));
+      }
     } catch (e) {
       alert('Notifikacije nije moguće uključiti: ' + (e && e.message ? e.message : e));
     }
@@ -1947,34 +1962,93 @@ function playerLabel(p) {
   return p.name || (p.number ? `#${p.number}` : '');
 }
 
-// Popunjava padajuću listu igrača iz spiska (samo igrači te ekipe)
+// Razmak između dva imena (broj izmjena slova) - hvata tipfelere poput "Hodžić" / "Hodžićć"
+function editDistance(a, b) {
+  const m = a.length, n = b.length;
+  if (Math.abs(m - n) > 3) return 99;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let k = 1; k <= n; k++) {
+      cur[k] = Math.min(prev[k] + 1, cur[k - 1] + 1, prev[k - 1] + (a[i - 1] === b[k - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+
+// Nalazi red u spisku koji odgovara ranije spremljenom igraču (strijelac / isključenje).
+// Ako je ime u spisku ispravljeno, stari zapis se sam veže za ispravljeno ime.
+function findRosterMatch(roster, p) {
+  if (!p || !(p.name || p.number)) return null;
+  const exact = roster.find(r => playerKey(r) === playerKey(p));
+  if (exact) return exact;
+  const pk = nameKey(p.name);
+  if (pk) {
+    const sameName = roster.filter(r => nameKey(r.name) === pk);
+    if (sameName.length === 1) return sameName[0];
+  }
+  if (p.number) {
+    const sameNum = roster.filter(r => r.number && String(r.number) === String(p.number));
+    if (sameNum.length === 1) return sameNum[0];
+  }
+  if (pk.length >= 5) {
+    let best = null, bestDist = 3, tie = false;
+    roster.forEach(r => {
+      const rk = nameKey(r.name);
+      if (!rk) return;
+      const dist = editDistance(pk, rk);
+      if (dist < bestDist) { best = r; bestDist = dist; tie = false; }
+      else if (dist === bestDist && best) tie = true;
+    });
+    if (best && !tie) return best;
+  }
+  return null;
+}
+
+// Popunjava padajuću listu igrača iz spiska (samo igrači te ekipe).
+// Opcija je vezana za RED u spisku (rid), pa promjena imena u spisku automatski mijenja i strijelce/isključenja.
 function fillPlayerSelect(sel, side, getRoster, selected) {
   const roster = getRoster().filter(p => p.side === side);
   const current = sel.selectedOptions && sel.selectedOptions[0];
-  const keep = current && current.value ? { number: current.dataset.number, name: current.dataset.name } : null;
-  const chosen = selected || keep;
-  const wanted = chosen ? playerKey(chosen) : '';
+
+  let wanted = '';
+  let orphan = null;
+  if (selected) {
+    const match = findRosterMatch(roster, selected);
+    if (match) wanted = match.rid;
+    else orphan = { number: selected.number || '', name: selected.name || '' };
+  } else if (current && current.value) {
+    if (current.dataset.orphan) orphan = { number: current.dataset.number || '', name: current.dataset.name || '' };
+    else wanted = current.value;
+  }
 
   sel.innerHTML = '';
   const first = h('option', '', roster.length ? '— izaberi igrača —' : 'Prvo dodaj igrače na spisak');
   first.value = '';
   sel.appendChild(first);
 
-  const seen = new Set();
-  const addOption = (p) => {
-    const key = playerKey(p);
-    if (seen.has(key)) return;
-    seen.add(key);
+  roster.forEach(p => {
     const o = h('option', '', playerLabel(p));
-    o.value = key;
+    o.value = p.rid;
     o.dataset.number = p.number || '';
     o.dataset.name = p.name || '';
     sel.appendChild(o);
-  };
-  roster.forEach(addOption);
-  // zadržava ranije upisanog igrača čak i ako više nije na spisku
-  if (chosen && (chosen.name || chosen.number)) addOption(chosen);
-  sel.value = [...sel.options].some(o => o.value === wanted) ? wanted : '';
+  });
+
+  // igrač koji nije na spisku (npr. star zapis) ostaje vidljiv da se ne izgubi
+  let orphanValue = '';
+  if (orphan && (orphan.name || orphan.number)) {
+    const o = h('option', '', playerLabel(orphan) + ' (nije na spisku)');
+    orphanValue = 'orphan::' + playerKey(orphan);
+    o.value = orphanValue;
+    o.dataset.number = orphan.number;
+    o.dataset.name = orphan.name;
+    o.dataset.orphan = '1';
+    sel.appendChild(o);
+  }
+  const target = wanted || orphanValue;
+  sel.value = [...sel.options].some(o => o.value === target) ? target : '';
 }
 
 function buildDetailsEditor(m, teams, allMatches) {
@@ -2023,6 +2097,7 @@ function buildDetailsEditor(m, teams, allMatches) {
 
   const getRoster = () => [...rosterBox.querySelectorAll('.md-row')]
     .map(row => ({
+      rid: row.dataset.rid,
       side: sideOf(row),
       number: row.querySelector('.in-number').value.trim(),
       name: row.querySelector('.in-pname').value.trim()
@@ -2041,8 +2116,10 @@ function buildDetailsEditor(m, teams, allMatches) {
     updateSum();
   };
 
+  let ridCounter = 0;
   const addRosterRow = (data = {}) => {
     const row = h('div', 'md-row');
+    row.dataset.rid = 'r' + (++ridCounter);
     const sel = sideSelect(info, data.side);
     sel.classList.add('sel-side');
     const num = inputEl('in-num in-number', 'text', data.number, 'br.', { maxlength: 4 });
@@ -2050,6 +2127,7 @@ function buildDetailsEditor(m, teams, allMatches) {
     const remove = h('button', 'btn secondary small', '×');
     remove.type = 'button';
     [sel, num, name].forEach(el => el.addEventListener('change', refreshPlayerSelects));
+    [num, name].forEach(el => el.addEventListener('input', refreshPlayerSelects));
     remove.addEventListener('click', () => { row.remove(); refreshPlayerSelects(); });
     row.append(sel, num, name, remove);
     rosterBox.appendChild(row);
@@ -2207,7 +2285,7 @@ function buildDetailsEditor(m, teams, allMatches) {
       halfOpp: ho,
       timeoutsClub: parseInt(toClub.value, 10) || 0,
       timeoutsOpp: parseInt(toOpp.value, 10) || 0,
-      roster: getRoster(),
+      roster: getRoster().map(({ rid, ...p }) => p),
       scorers,
       suspensions
     };

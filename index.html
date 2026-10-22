@@ -24,12 +24,17 @@
 				window.OneSignalDeferred.push(async function (OneSignal) {
 					// Folder u kojem je stranica (npr. "/orkrudarbanovici/" na GitHub Pages, "/" na vlastitoj domeni)
 					var base = window.location.pathname.replace(/[^\/]*$/, "");
-					await OneSignal.init({
-						appId: window.ONESIGNAL_APP_ID,
-						serviceWorkerPath: base.slice(1) + "OneSignalSDKWorker.js",
-						serviceWorkerParam: { scope: base },
-						notifyButton: { enable: false }
-					});
+					try {
+						await OneSignal.init({
+							appId: window.ONESIGNAL_APP_ID,
+							serviceWorkerPath: base.slice(1) + "OneSignalSDKWorker.js",
+							serviceWorkerParam: { scope: base },
+							notifyButton: { enable: false }
+						});
+					} catch (e) {
+						window.ONESIGNAL_INIT_ERROR = (e && e.message) ? e.message : String(e);
+						console.error("OneSignal init nije uspio:", e);
+					}
 				});
 			}
 		</script>
@@ -293,7 +298,7 @@
 			</section>
 		</main>
 
-		<script src="script.js?v=11"></script>
+		<script src="script.js?v=12"></script>
 	</body>
 </html>
 
