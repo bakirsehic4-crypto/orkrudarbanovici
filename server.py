@@ -30,7 +30,7 @@ HASH_PREFIXES = ("scrypt:", "pbkdf2:")
 CLUB_NAME_PUSH = "ORK Rudar Banovići"
 ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID", "").strip()
 ONESIGNAL_API_KEY = os.getenv("ONESIGNAL_API_KEY", "").strip()
-SITE_URL = os.getenv("SITE_URL", "").strip()  # npr. https://vas-sajt.com (otvara se klikom na notifikaciju)
+SITE_URL = os.getenv("SITE_URL", "https://orkrudarbanovici.github.io/orkrudarbanovici/").strip()  # npr. https://vas-sajt.com (otvara se klikom na notifikaciju)
 
 
 def send_push_async(heading, message):
@@ -40,13 +40,18 @@ def send_push_async(heading, message):
 
     def _send():
         try:
+            base = (SITE_URL.rstrip("/") + "/") if SITE_URL else ""
             body = {
                 "app_id": ONESIGNAL_APP_ID,
                 "target_channel": "push",
-                "included_segments": ["Total Subscriptions"],
+                "included_segments": ["Subscribed Users"],
                 "headings": {"en": heading[:80]},
                 "contents": {"en": message[:200]},
+                "priority": 10,
+                "ttl": 259200,
             }
+            if base:
+                body["chrome_web_badge"] = base + "badge-96.png"
             if SITE_URL:
                 body["url"] = SITE_URL
             req = urllib.request.Request(
