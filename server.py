@@ -76,7 +76,7 @@ def send_push_async(heading, message):
             log.warning("OneSignal push nije poslan: %s", exc)
 
     threading.Thread(target=_send, daemon=True).start()
-SERVER_VERSION = "2026-10-21-voice-reply"
+SERVER_VERSION = "2026-10-22-typing"
 
 
 # ---------------------------------------------------------------------------

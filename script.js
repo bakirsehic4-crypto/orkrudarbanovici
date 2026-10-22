@@ -406,7 +406,8 @@ async function renderAnnouncements() {
     }
     items.forEach(item => {
       const li = h('li', 'announcement');
-      li.appendChild(h('div', 'meta', `${item.author || 'Admin'} · ${formatRelativeTime(item.ts)}`));
+      const authorName = (!item.author || String(item.author).trim().toLowerCase() === 'admin') ? 'Trener' : item.author;
+      li.appendChild(h('div', 'meta', `${authorName} · ${formatRelativeTime(item.ts)}`));
       const body = h('div', '', [item.title, item.content].filter(Boolean).join('\n'));
       body.style.whiteSpace = 'pre-wrap';
       body.style.overflowWrap = 'anywhere';
@@ -1074,7 +1075,7 @@ function ingestChat(messages, forceScroll) {
 }
 
 // "... is typing" indikator
-const TYPING_TEXT = { one: 'is typing', many: 'are typing', several: 'Several people are typing' };
+const TYPING_TEXT = { one: 'piše', many: 'pišu', and: 'i', several: 'Nekoliko osoba piše' };
 const typingState = { polling: false, lastPing: 0, sentTyping: false };
 
 function renderTyping(names) {
@@ -1084,7 +1085,7 @@ function renderTyping(names) {
   if (!names || !names.length) return;
   let label;
   if (names.length === 1) label = names[0] + ' ' + TYPING_TEXT.one;
-  else if (names.length === 2) label = names[0] + ' and ' + names[1] + ' ' + TYPING_TEXT.many;
+  else if (names.length === 2) label = names[0] + ' ' + TYPING_TEXT.and + ' ' + names[1] + ' ' + TYPING_TEXT.many;
   else label = TYPING_TEXT.several;
   box.append(document.createTextNode(label));
   const dots = h('span', 'typing-dots');
@@ -1099,7 +1100,7 @@ async function pollTyping() {
     const data = await fetchJson(API_BASE + '/chat/typing');
     renderTyping(Array.isArray(data.typing) ? data.typing : []);
   } catch (err) {
-    /* nije kritično */
+    console.warn('Typing (čitanje) nije uspjelo:', err && err.message ? err.message : err);
   } finally {
     typingState.polling = false;
   }
@@ -1117,7 +1118,8 @@ function pingTyping(isTyping) {
     typingState.sentTyping = false;
     typingState.lastPing = 0;
   }
-  fetchJson(API_BASE + '/chat/typing', { method: 'POST', body: JSON.stringify({ typing: isTyping }) }).catch(() => {});
+  fetchJson(API_BASE + '/chat/typing', { method: 'POST', body: JSON.stringify({ typing: isTyping }) })
+    .catch((err) => console.warn('Typing (slanje) nije uspjelo:', err && err.message ? err.message : err));
 }
 
 async function pollChat() {
