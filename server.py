@@ -283,6 +283,15 @@ def init_db():
                 ON CONFLICT (id) DO NOTHING
             """, "chat")
 
+        # Chat: ko trenutno pise ("... is typing")
+        db_execute(conn, """
+            CREATE TABLE IF NOT EXISTS chat_typing (
+                username TEXT PRIMARY KEY,
+                ts BIGINT NOT NULL
+            )
+        """)
+        conn.commit()
+
         # Galerija
         ensure_table(conn, "gallery", """
             CREATE TABLE IF NOT EXISTS gallery (
@@ -976,6 +985,10 @@ def handle_chat():
                 (msg_id, sender, text, image or None, audio or None, audio_ms, reply_to, now)
             )
             row = db_fetchone(conn, "SELECT ts FROM chat_messages WHERE id = %s", (msg_id,))
+            try:
+                db_execute(conn, "DELETE FROM chat_typing WHERE LOWER(username) = LOWER(%s)", (sender,))
+            except Exception:
+                pass
             conn.commit()
             return jsonify({"ok": True, "id": msg_id, "ts": row["ts"] if row else now})
 
@@ -1009,6 +1022,46 @@ def handle_chat():
                 """
             )
         return jsonify([chat_json(r) for r in rows])
+    finally:
+        conn.close()
+
+
+TYPING_TTL_MS = 5000
+
+
+@app.route('/api/chat/typing', methods=['GET', 'POST'])
+def chat_typing():
+    """POST: javlja da korisnik pise (ili da je prestao: {"typing": false}).
+    GET: vraca imena ostalih korisnika koji pisu u zadnjih nekoliko sekundi."""
+    me = request_user()
+    if not me:
+        return jsonify({"typing": []}) if request.method == 'GET' else jsonify({"ok": True})
+    now = int(time.time() * 1000)
+    conn = get_db_connection()
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+            if payload.get("typing", True):
+                db_execute(
+                    conn,
+                    """
+                    INSERT INTO chat_typing (username, ts) VALUES (%s, %s)
+                    ON CONFLICT (username) DO UPDATE SET ts = EXCLUDED.ts
+                    """,
+                    (me[:60], now)
+                )
+                db_execute(conn, "DELETE FROM chat_typing WHERE ts < %s", (now - 60000,))
+            else:
+                db_execute(conn, "DELETE FROM chat_typing WHERE username = %s", (me[:60],))
+            conn.commit()
+            return jsonify({"ok": True})
+
+        rows = db_fetchall(
+            conn,
+            "SELECT username FROM chat_typing WHERE ts >= %s AND LOWER(username) <> LOWER(%s) ORDER BY ts ASC LIMIT 5",
+            (now - TYPING_TTL_MS, me)
+        )
+        return jsonify({"typing": [r["username"] for r in rows]})
     finally:
         conn.close()
 

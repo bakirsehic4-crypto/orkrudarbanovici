@@ -846,6 +846,7 @@ function resetChatState() {
   renderReplyBar();
   if ($('chatMessages')) $('chatMessages').innerHTML = '';
   if ($('chatJump')) $('chatJump').hidden = true;
+  if ($('chatTyping')) $('chatTyping').textContent = '';
 }
 
 let currentVoice = null;
@@ -1057,6 +1058,53 @@ function ingestChat(messages, forceScroll) {
   }
 }
 
+// "... is typing" indikator
+const TYPING_TEXT = { one: 'is typing', many: 'are typing', several: 'Several people are typing' };
+const typingState = { polling: false, lastPing: 0, sentTyping: false };
+
+function renderTyping(names) {
+  const box = $('chatTyping');
+  if (!box) return;
+  box.textContent = '';
+  if (!names || !names.length) return;
+  let label;
+  if (names.length === 1) label = names[0] + ' ' + TYPING_TEXT.one;
+  else if (names.length === 2) label = names[0] + ' and ' + names[1] + ' ' + TYPING_TEXT.many;
+  else label = TYPING_TEXT.several;
+  box.append(document.createTextNode(label));
+  const dots = h('span', 'typing-dots');
+  dots.append(h('i'), h('i'), h('i'));
+  box.appendChild(dots);
+}
+
+async function pollTyping() {
+  if (typingState.polling || !chatState.loaded || currentView !== 'chat' || document.hidden || !currentUser()) return;
+  typingState.polling = true;
+  try {
+    const data = await fetchJson(API_BASE + '/chat/typing');
+    renderTyping(Array.isArray(data.typing) ? data.typing : []);
+  } catch (err) {
+    /* nije kritično */
+  } finally {
+    typingState.polling = false;
+  }
+}
+
+function pingTyping(isTyping) {
+  if (!currentUser()) return;
+  const now = Date.now();
+  if (isTyping) {
+    if (now - typingState.lastPing < 2500) return;
+    typingState.lastPing = now;
+    typingState.sentTyping = true;
+  } else {
+    if (!typingState.sentTyping) return;
+    typingState.sentTyping = false;
+    typingState.lastPing = 0;
+  }
+  fetchJson(API_BASE + '/chat/typing', { method: 'POST', body: JSON.stringify({ typing: isTyping }) }).catch(() => {});
+}
+
 async function pollChat() {
   if (chatState.polling || !chatState.loaded || currentView !== 'chat' || document.hidden) return;
   chatState.polling = true;
@@ -1071,6 +1119,8 @@ async function pollChat() {
 }
 
 function stopChatRefresh() {
+  pingTyping(false);
+  if ($('chatTyping')) $('chatTyping').textContent = '';
   if (chatTimer) {
     clearInterval(chatTimer);
     chatTimer = null;
@@ -1104,7 +1154,7 @@ async function startChatRefresh() {
     chatScrollToBottom();
     pollChat();
   }
-  if (currentView === 'chat') chatTimer = setInterval(pollChat, 2000);
+  if (currentView === 'chat') chatTimer = setInterval(() => { pollChat(); pollTyping(); }, 2000);
 }
 
 async function deliverChat(payload, li) {
@@ -1295,7 +1345,11 @@ function initChat() {
   }
 
   if (textEl) {
-    textEl.addEventListener('input', autoGrow);
+    textEl.addEventListener('input', () => {
+      autoGrow();
+      pingTyping(textEl.value.trim().length > 0);
+    });
+    textEl.addEventListener('blur', () => pingTyping(false));
     textEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -1313,6 +1367,8 @@ function initChat() {
     const image = pendingImage;
     if (!text && !image) return;
     sendChat({ text, image });
+    typingState.sentTyping = false;
+    typingState.lastPing = 0;
     if (textEl) {
       textEl.value = '';
       autoGrow();
