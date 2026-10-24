@@ -29,12 +29,14 @@
 							appId: window.ONESIGNAL_APP_ID,
 							serviceWorkerPath: base.slice(1) + "OneSignalSDKWorker.js",
 							serviceWorkerParam: { scope: base },
+							serviceWorkerOverrideForTypical: true,
 							notifyButton: { enable: false }
 						});
 					} catch (e) {
 						window.ONESIGNAL_INIT_ERROR = (e && e.message) ? e.message : String(e);
 						console.error("OneSignal init nije uspio:", e);
 					}
+					window.ONESIGNAL_INIT_DONE = true;
 				});
 			}
 		</script>
@@ -298,7 +300,7 @@
 			</section>
 		</main>
 
-		<script src="script.js?v=13"></script>
+		<script src="script.js?v=15"></script>
 	</body>
 </html>
 
