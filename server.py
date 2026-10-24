@@ -33,10 +33,28 @@ ONESIGNAL_API_KEY = os.getenv("ONESIGNAL_API_KEY", "").strip()
 SITE_URL = os.getenv("SITE_URL", "https://orkrudarbanovici.github.io/orkrudarbanovici/").strip()  # npr. https://vas-sajt.com (otvara se klikom na notifikaciju)
 
 
+# Segmenti na koje se pokusava slati (prvi koji vrati id poruke je dovoljan)
+PUSH_SEGMENT_TRIES = [["Subscribed Users"], ["All"], ["Total Subscriptions"]]
+
+
 def send_push_async(heading, message):
     """Salje push svim pretplacenim korisnicima. Radi u pozadini; greska nikad ne rusi server."""
     if not ONESIGNAL_APP_ID or not ONESIGNAL_API_KEY:
         return
+
+    def _post(body):
+        req = urllib.request.Request(
+            "https://api.onesignal.com/notifications",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "Authorization": "Key " + ONESIGNAL_API_KEY,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            return resp.status, raw
 
     def _send():
         try:
@@ -44,7 +62,6 @@ def send_push_async(heading, message):
             body = {
                 "app_id": ONESIGNAL_APP_ID,
                 "target_channel": "push",
-                "included_segments": ["Subscribed Users"],
                 "headings": {"en": heading[:80]},
                 "contents": {"en": message[:200]},
                 "priority": 10,
@@ -54,29 +71,29 @@ def send_push_async(heading, message):
                 body["chrome_web_badge"] = base + "badge-96.png"
             if SITE_URL:
                 body["url"] = SITE_URL
-            req = urllib.request.Request(
-                "https://api.onesignal.com/notifications",
-                data=json.dumps(body).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json; charset=utf-8",
-                    "Authorization": "Key " + ONESIGNAL_API_KEY,
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                raw = resp.read().decode("utf-8", "replace")[:400]
-                log.info("OneSignal push poslan (app %s..., status %s): %s", ONESIGNAL_APP_ID[:8], resp.status, raw)
-        except urllib.error.HTTPError as exc:
-            try:
-                detail = exc.read().decode("utf-8", "replace")[:400]
-            except Exception:  # noqa: BLE001
-                detail = ""
-            log.warning("OneSignal push nije poslan: HTTP %s %s", exc.code, detail)
+            for segments in PUSH_SEGMENT_TRIES:
+                body["included_segments"] = segments
+                try:
+                    status, raw = _post(body)
+                except urllib.error.HTTPError as exc:
+                    try:
+                        detail = exc.read().decode("utf-8", "replace")[:400]
+                    except Exception:  # noqa: BLE001
+                        detail = ""
+                    log.warning("OneSignal push nije poslan (segment %s): HTTP %s %s", segments, exc.code, detail)
+                    continue
+                try:
+                    data = json.loads(raw)
+                except ValueError:
+                    data = {}
+                log.info("OneSignal push (app %s..., segment %s, status %s): %s", ONESIGNAL_APP_ID[:8], segments, status, raw[:400])
+                if data.get("id"):
+                    return
         except Exception as exc:  # noqa: BLE001
             log.warning("OneSignal push nije poslan: %s", exc)
 
     threading.Thread(target=_send, daemon=True).start()
-SERVER_VERSION = "2026-10-22-typing"
+SERVER_VERSION = "2026-10-23-push-fallback"
 
 
 # ---------------------------------------------------------------------------
