@@ -33,8 +33,9 @@ ONESIGNAL_API_KEY = os.getenv("ONESIGNAL_API_KEY", "").strip()
 SITE_URL = os.getenv("SITE_URL", "https://orkrudarbanovici.github.io/orkrudarbanovici/").strip()  # npr. https://vas-sajt.com (otvara se klikom na notifikaciju)
 
 
-# Segmenti na koje se pokusava slati (prvi koji vrati id poruke je dovoljan)
-PUSH_SEGMENT_TRIES = [["Subscribed Users"], ["All"], ["Total Subscriptions"]]
+# Segmenti na koje se pokusava slati (prvi koji vrati id poruke je dovoljan).
+# "All" radi na ovoj aplikaciji; "Subscribed Users" vraca "not subscribed", pa je samo rezerva.
+PUSH_SEGMENT_TRIES = [["All"], ["Subscribed Users"], ["Total Subscriptions"]]
 
 
 def send_push_async(heading, message):
