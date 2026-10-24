@@ -65,7 +65,7 @@ def send_push_async(heading, message):
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 raw = resp.read().decode("utf-8", "replace")[:400]
-                log.info("OneSignal push poslan (status %s): %s", resp.status, raw)
+                log.info("OneSignal push poslan (app %s..., status %s): %s", ONESIGNAL_APP_ID[:8], resp.status, raw)
         except urllib.error.HTTPError as exc:
             try:
                 detail = exc.read().decode("utf-8", "replace")[:400]
