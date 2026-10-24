@@ -290,52 +290,168 @@ async function onLoggedIn(user) {
   showView('announcements');
 }
 
+// Poruka na ekranu (alert() Chrome na telefonu zna tiho blokirati, pa se status prikazuje u stranici)
+function showPushStatus(message, keepOpen) {
+  let box = document.getElementById('pushStatusBox');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'pushStatusBox';
+    box.style.cssText = 'position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;background:#0b1f15;color:#e8fff1;border:1px solid #4ade80;border-radius:14px;padding:14px 40px 14px 16px;font-size:14px;line-height:1.45;white-space:pre-wrap;box-shadow:0 10px 30px rgba(0,0,0,.55);max-height:60vh;overflow:auto';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'Zatvori');
+    close.style.cssText = 'position:absolute;top:6px;right:10px;background:none;border:0;color:#e8fff1;font-size:24px;line-height:1;cursor:pointer';
+    close.addEventListener('click', () => box.remove());
+    const text = document.createElement('div');
+    text.id = 'pushStatusText';
+    box.append(text, close);
+    document.body.appendChild(box);
+  }
+  document.getElementById('pushStatusText').textContent = message;
+  clearTimeout(showPushStatus._t);
+  if (!keepOpen) showPushStatus._t = setTimeout(() => { const b = document.getElementById('pushStatusBox'); if (b) b.remove(); }, 8000);
+}
+
+async function pushDiagnostics() {
+  let workers = 'nema';
+  try {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    if (regs.length) workers = regs.map(r => ((r.active || r.waiting || r.installing || {}).scriptURL || '?') + ' [' + r.scope + ']').join('; ');
+  } catch (e) { workers = 'nije dostupno'; }
+  return 'Dozvola: ' + (('Notification' in window) ? Notification.permission : 'nema podrške') + '\n' +
+    'OneSignal SDK učitan: ' + (window.OneSignal ? 'da' : 'ne') + '\n' +
+    'Init završen: ' + (window.ONESIGNAL_INIT_DONE ? 'da' : 'ne') + '\n' +
+    'Service worker: ' + workers + '\n' +
+    'Adresa: ' + location.href + '\n' +
+    'Greška: ' + (window.ONESIGNAL_INIT_ERROR || 'nema');
+}
+
 // Push notifikacije (OneSignal). Na iPhone-u rade samo kad je sajt dodan na početni ekran.
 function enablePushNotifications() {
   closeMenu();
+  showPushStatus('Provjeravam notifikacije...', true);
   const appId = window.ONESIGNAL_APP_ID || '';
   if (!appId || appId.indexOf('PASTE') === 0) {
-    alert('Notifikacije još nisu podešene na sajtu.');
+    showPushStatus('Notifikacije još nisu podešene na sajtu.');
     return;
   }
   const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
   const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
   if (isIos && !standalone) {
-    alert('Na iPhone-u prvo dodajte sajt na početni ekran (Dijeli > Dodaj na početni ekran), otvorite ga odatle pa ponovo odaberite "Uključi notifikacije".');
+    showPushStatus('Na iPhone-u prvo dodajte sajt na početni ekran (Dijeli > Dodaj na početni ekran), otvorite ga odatle pa ponovo odaberite "Uključi notifikacije".', true);
     return;
   }
   if (!('Notification' in window)) {
-    alert('Ovaj preglednik ne podržava notifikacije.');
+    showPushStatus('Ovaj preglednik ne podržava notifikacije.', true);
     return;
   }
   if (Notification.permission === 'denied') {
-    alert('Notifikacije su blokirane. Dozvolite ih u postavkama preglednika/telefona za ovaj sajt.');
+    showPushStatus('Notifikacije su blokirane. Dozvolite ih u postavkama preglednika/telefona za ovaj sajt (ikona katanca kraj adrese > Notifikacije > Dozvoli).', true);
     return;
   }
   window.OneSignalDeferred = window.OneSignalDeferred || [];
+  let sdkStarted = false;
+  const sdkGuard = setTimeout(async () => {
+    if (sdkStarted) return;
+    showPushStatus('OneSignal se nije učitao (8 s). Najčešće ga blokira blokator reklama, Private DNS / AdGuard / NextDNS, VPN ili Brave štit.\n\n' + await pushDiagnostics(), true);
+  }, 8000);
   window.OneSignalDeferred.push(async function (OneSignal) {
+    sdkStarted = true;
+    clearTimeout(sdkGuard);
     try {
+      // sačekaj da završi OneSignal.init (do 5 s)
+      for (let i = 0; i < 20 && !window.ONESIGNAL_INIT_DONE; i++) await new Promise(r => setTimeout(r, 250));
+      showPushStatus('Tražim dozvolu...', true);
       await OneSignal.Notifications.requestPermission();
       if (!OneSignal.Notifications.permission) {
-        alert('Dozvola za notifikacije nije data.');
+        showPushStatus('Dozvola za notifikacije nije data.\n\n' + await pushDiagnostics(), true);
         return;
       }
       try { await OneSignal.User.PushSubscription.optIn(); } catch (e) { /* ignore */ }
-      // sačekaj da OneSignal napravi pretplatu (do 8 s)
+      showPushStatus('Dozvola data. Pravim pretplatu...', true);
       let subId = OneSignal.User.PushSubscription.id;
       for (let i = 0; i < 16 && !subId; i++) {
         await new Promise(r => setTimeout(r, 500));
         subId = OneSignal.User.PushSubscription.id;
       }
       if (subId) {
-        alert('Notifikacije su uključene.');
+        showPushStatus('Notifikacije su uključene.\nID pretplate: ' + subId);
       } else {
-        alert('Dozvola je data, ali OneSignal nije napravio pretplatu. Provjerite Site URL u OneSignal postavkama i da je OneSignalSDKWorker.js dostupan na sajtu.' + (window.ONESIGNAL_INIT_ERROR ? '\n\nGreška: ' + window.ONESIGNAL_INIT_ERROR : ''));
+        showPushStatus('Dozvola je data, ali OneSignal nije napravio pretplatu.\n\n' + await pushDiagnostics(), true);
       }
     } catch (e) {
-      alert('Notifikacije nije moguće uključiti: ' + (e && e.message ? e.message : e));
+      showPushStatus('Notifikacije nije moguće uključiti: ' + (e && e.message ? e.message : e) + '\n\n' + await pushDiagnostics(), true);
     }
   });
+}
+
+// Prikaz stanja notifikacija u Postavkama
+function renderSettings() {
+  const el = $('notifState');
+  if (!el) return;
+  let text;
+  if (!('Notification' in window)) text = 'Ovaj preglednik ne podržava notifikacije.';
+  else if (Notification.permission === 'granted') text = 'Dozvola u pregledniku: dozvoljeno. Ako obavijesti ne stižu, probajte "Osvježi".';
+  else if (Notification.permission === 'denied') text = 'Dozvola u pregledniku: blokirano. Dozvolite je preko ikone katanca kraj adrese (Notifikacije > Dozvoli).';
+  else text = 'Notifikacije još nisu uključene na ovom uređaju.';
+  el.textContent = text;
+}
+
+// Isključi notifikacije na ovom uređaju (dozvola u pregledniku ostaje, pa se kasnije ponovo uključuju jednim klikom)
+function disablePushNotifications() {
+  closeMenu();
+  showPushStatus('Isključujem notifikacije...', true);
+  window.OneSignalDeferred = window.OneSignalDeferred || [];
+  let started = false;
+  const guard = setTimeout(() => {
+    if (!started) showPushStatus('OneSignal se nije učitao, pa notifikacije nije moguće isključiti. Probajte ponovo kasnije.', true);
+  }, 8000);
+  window.OneSignalDeferred.push(async function (OneSignal) {
+    started = true;
+    clearTimeout(guard);
+    try {
+      await OneSignal.User.PushSubscription.optOut();
+      showPushStatus('Notifikacije su isključene na ovom uređaju. Ponovo ih uključujete preko "Uključi notifikacije".');
+    } catch (e) {
+      showPushStatus('Isključivanje nije uspjelo: ' + (e && e.message ? e.message : e), true);
+    }
+  });
+}
+
+// Osvježi notifikacije: obriše service worker na ovom uređaju, ponovo učita sajt i ponovo prijavi uređaj
+async function resetPushNotifications() {
+  closeMenu();
+  showPushStatus('Osvježavam notifikacije...', true);
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const reg of regs) {
+        try {
+          const sub = reg.pushManager && await reg.pushManager.getSubscription();
+          if (sub) await sub.unsubscribe();
+        } catch (e) { /* ignore */ }
+        try { await reg.unregister(); } catch (e) { /* ignore */ }
+      }
+    }
+    sessionStorage.setItem('pushReset', '1');
+    showPushStatus('Uređaj je odjavljen. Ponovo učitavam sajt...', true);
+    setTimeout(() => location.reload(), 1200);
+  } catch (e) {
+    showPushStatus('Osvježavanje nije uspjelo: ' + (e && e.message ? e.message : e), true);
+  }
+}
+
+// Nakon osvježavanja sajta automatski ponovo prijavi uređaj (ako je dozvola već data)
+function resumePushReset() {
+  let pending = false;
+  try { pending = sessionStorage.getItem('pushReset') === '1'; sessionStorage.removeItem('pushReset'); } catch (e) { /* ignore */ }
+  if (!pending) return;
+  if ('Notification' in window && Notification.permission === 'granted') {
+    setTimeout(enablePushNotifications, 800);
+  } else {
+    showPushStatus('Sad kliknite "Uključi notifikacije" da ponovo prijavite uređaj.', true);
+  }
 }
 
 function logOut() {
@@ -362,7 +478,8 @@ const VIEWS = {
   matches: 'viewMatches',
   matchDetail: 'viewMatchDetail',
   players: 'viewPlayers',
-  player: 'viewPlayer'
+  player: 'viewPlayer',
+  settings: 'viewSettings'
 };
 
 function closeMenu() {
@@ -389,6 +506,7 @@ function showView(name) {
   if (name === 'matchDetail') renderMatchDetail();
   if (name === 'players') renderPlayersList();
   if (name === 'player') renderPlayerPage();
+  if (name === 'settings') renderSettings();
 }
 
 // ---------------------------------------------------------------------------
@@ -2802,13 +2920,16 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!menuList.contains(e.target) && e.target !== menuBtn) closeMenu();
     });
   }
-  const nav = { announcementsBtn: 'announcements', chatBtn: 'chat', galleryBtn: 'gallery', terminiBtn: 'termini', matchesBtn: 'matches', playersBtn: 'players' };
+  const nav = { announcementsBtn: 'announcements', chatBtn: 'chat', galleryBtn: 'gallery', terminiBtn: 'termini', matchesBtn: 'matches', playersBtn: 'players', settingsBtn: 'settings' };
   Object.keys(nav).forEach(id => {
     const btn = $(id);
     if (btn) btn.addEventListener('click', () => showView(nav[id]));
   });
   if ($('logoutBtn')) $('logoutBtn').addEventListener('click', logOut);
   if ($('notifBtn')) $('notifBtn').addEventListener('click', enablePushNotifications);
+  if ($('notifOffBtn')) $('notifOffBtn').addEventListener('click', disablePushNotifications);
+  if ($('notifResetBtn')) $('notifResetBtn').addEventListener('click', resetPushNotifications);
+  resumePushReset();
 
   // Avatar
   const avatar = $('avatar');

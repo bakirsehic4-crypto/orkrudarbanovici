@@ -5,7 +5,7 @@
 		<meta name="viewport" content="width=device-width,initial-scale=1" />
 		<title>ORK Rudar Banovići</title>
 		<link rel="icon" type="image/png" href="logo.png" />
-		<link rel="stylesheet" href="style.css?v=10" />
+		<link rel="stylesheet" href="style.css?v=11" />
 		<!-- PWA -->
 		<link rel="manifest" href="manifest.webmanifest" />
 		<meta name="theme-color" content="#07130d" />
@@ -88,12 +88,12 @@
 					</button>
 					<div id="menuList" class="menu-list" role="menu">
 						<button class="menu-item" id="announcementsBtn">Obavijesti</button>
-						<button class="menu-item" id="notifBtn">Uključi notifikacije</button>
 						<button class="menu-item" id="chatBtn">Chat</button>
 						<button class="menu-item" id="galleryBtn">Galerija</button>
 						<button class="menu-item" id="terminiBtn">Termini</button>
 						<button class="menu-item" id="matchesBtn">Utakmice</button>
 						<button class="menu-item" id="playersBtn">Igrači</button>
+						<button class="menu-item" id="settingsBtn">Postavke</button>
 						<button class="menu-item" id="logoutBtn">Odjava</button>
 					</div>
 				</div>
@@ -292,6 +292,27 @@
 					<div id="playersList"></div>
 				</div>
 			</section>
+			<section id="viewSettings" class="view-panel">
+				<div class="md-wrap">
+					<div class="settings-card">
+						<h2>Postavke</h2>
+						<h3 class="settings-sub">Notifikacije</h3>
+						<p class="muted" id="notifState">Provjeravam stanje...</p>
+						<div class="settings-row">
+							<div class="settings-text"><strong>Uključi notifikacije</strong><span class="muted">Prijavi ovaj uređaj da dobija obavijesti.</span></div>
+							<button type="button" class="btn small" id="notifBtn">Uključi</button>
+						</div>
+						<div class="settings-row">
+							<div class="settings-text"><strong>Isključi notifikacije</strong><span class="muted">Obavijesti više neće stizati na ovaj uređaj.</span></div>
+							<button type="button" class="btn secondary small" id="notifOffBtn">Isključi</button>
+						</div>
+						<div class="settings-row">
+							<div class="settings-text"><strong>Osvježi notifikacije</strong><span class="muted">Ako uređaj ne dobija obavijesti, ponovo ga prijavi.</span></div>
+							<button type="button" class="btn secondary small" id="notifResetBtn">Osvježi</button>
+						</div>
+					</div>
+				</div>
+			</section>
 			<section id="viewPlayer" class="view-panel">
 				<div class="md-wrap">
 					<button type="button" id="playerBack" class="btn secondary small md-back">&larr; Igrači</button>
@@ -300,7 +321,7 @@
 			</section>
 		</main>
 
-		<script src="script.js?v=15"></script>
+		<script src="script.js?v=17"></script>
 	</body>
 </html>
 
